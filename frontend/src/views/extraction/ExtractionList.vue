@@ -37,10 +37,10 @@
           </template>
         </el-table-column>
         <el-table-column label="文档" min-width="180" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.document?.original_filename ?? '-' }}</template>
+          <template #default="{ row }">{{ row.document_name ?? row.document_id }}</template>
         </el-table-column>
         <el-table-column label="模板" min-width="140" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.template?.name ?? '-' }}</template>
+          <template #default="{ row }">{{ row.template_name ?? row.template_id ?? '-' }}</template>
         </el-table-column>
         <el-table-column label="进度" width="140">
           <template #default="{ row }">
@@ -153,7 +153,7 @@ async function loadTasks() {
   try {
     const res = await extractionApi.list(query)
     tasks.value = res.data.items
-    total.value = res.data.total
+    total.value = res.data.pagination.total
   } catch {
     ElMessage.error('加载任务列表失败')
   } finally {

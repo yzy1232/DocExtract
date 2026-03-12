@@ -125,7 +125,7 @@ async function loadTemplates() {
       page_size: query.page_size,
     })
     templates.value = res.data.items
-    total.value = res.data.total
+    total.value = res.data.pagination.total
   } catch {
     ElMessage.error('加载模板列表失败')
   } finally {

@@ -3,11 +3,21 @@ Celery 应用实例配置
 """
 from celery import Celery
 from app.config import settings
+import re
+
+def _sanitize_redis_url(url: str) -> str:
+    if not url:
+        return url
+    # 修复因空密码导致的 redis://:@host 格式问题
+    if url.startswith("redis://") and "@" in url:
+        # 将 'redis://:@host' 或 'redis://:@' 等替换为 'redis://host' 或 'redis://'
+        url = url.replace("redis://:@", "redis://")
+    return url
 
 celery_app = Celery(
     "docextract",
-    broker=settings.CELERY_BROKER_URL,
-    backend=settings.CELERY_RESULT_BACKEND,
+    broker=_sanitize_redis_url(settings.CELERY_BROKER_URL),
+    backend=_sanitize_redis_url(settings.CELERY_RESULT_BACKEND),
     include=[
         "app.tasks.document_tasks",
         "app.tasks.extraction_tasks",

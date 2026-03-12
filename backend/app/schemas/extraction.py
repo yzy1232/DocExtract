@@ -145,6 +145,8 @@ class ExtractionTaskListOut(BaseModel):
     id: str
     document_id: str
     template_id: Optional[str] = None
+    document_name: Optional[str] = None
+    template_name: Optional[str] = None
     status: TaskStatus
     priority: TaskPriority
     progress: float

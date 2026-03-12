@@ -36,11 +36,11 @@
 
     <el-card shadow="never">
       <el-table :data="documents" v-loading="loading" stripe row-key="id">
-        <el-table-column prop="original_filename" label="文件名" min-width="200">
+        <el-table-column prop="name" label="文件名" min-width="200">
           <template #default="{ row }">
             <div class="filename-cell">
-              <el-icon class="file-icon"><component :is="fileIcon(row.file_type)" /></el-icon>
-              <span>{{ row.original_filename }}</span>
+              <el-icon class="file-icon"><component :is="fileIcon(row.format)" /></el-icon>
+              <span>{{ row.display_name || row.name }}</span>
             </div>
           </template>
         </el-table-column>
@@ -147,7 +147,7 @@ async function loadDocuments() {
   try {
     const res = await documentApi.list(query)
     documents.value = res.data.items
-    total.value = res.data.total
+    total.value = res.data.pagination.total
   } catch {
     ElMessage.error('加载文档列表失败')
   } finally {

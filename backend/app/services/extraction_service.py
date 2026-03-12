@@ -8,6 +8,7 @@ from typing import Optional, List, Tuple, Dict, Any
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 from app.models.extraction import (
     ExtractionTask, ExtractionResult, ExtractionField, ExtractionLog, TaskStatus, TaskPriority
 )
@@ -311,8 +312,15 @@ class ExtractionService:
         )
         total = count_result.scalar()
 
-        query = query.order_by(ExtractionTask.created_at.desc())
-        query = query.offset((page - 1) * page_size).limit(page_size)
+        query = (
+            query.options(
+                selectinload(ExtractionTask.document),
+                selectinload(ExtractionTask.template),
+            )
+            .order_by(ExtractionTask.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
         result = await self.db.execute(query)
         return result.scalars().all(), total
 

@@ -55,8 +55,14 @@ async def list_extractions(
         creator_id=creator_id, document_id=document_id,
         status=status, page=page, page_size=page_size,
     )
+    items = []
+    for t in tasks:
+        item = ExtractionTaskListOut.model_validate(t)
+        item.document_name = t.document.name if t.document else None
+        item.template_name = t.template.name if t.template else None
+        items.append(item)
     return ResponseBase(data=PaginatedResponse(
-        items=[ExtractionTaskListOut.model_validate(t) for t in tasks],
+        items=items,
         pagination=PageInfo(
             page=page, page_size=page_size, total=total,
             total_pages=(total + page_size - 1) // page_size,

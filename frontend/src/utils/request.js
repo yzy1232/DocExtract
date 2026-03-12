@@ -8,12 +8,22 @@ const request = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-// 请求拦截器 - 注入 JWT Token
+// 请求拦截器 - 注入 JWT Token，并清理空值查询参数
 request.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('access_token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
+    }
+    // 过滤掉值为空字符串、null、undefined 的查询参数，避免后端枚举校验 422
+    if (config.params) {
+      const cleaned = {}
+      for (const [k, v] of Object.entries(config.params)) {
+        if (v !== '' && v !== null && v !== undefined) {
+          cleaned[k] = v
+        }
+      }
+      config.params = cleaned
     }
     return config
   },
