@@ -1,0 +1,227 @@
+<template>
+  <div class="document-list">
+    <div class="page-header">
+      <h2 class="page-title">文档管理</h2>
+      <el-button type="primary" :icon="Upload" @click="router.push('/documents/upload')">
+        上传文档
+      </el-button>
+    </div>
+
+    <!-- 搜索 -->
+    <el-card shadow="never" class="search-card">
+      <el-row :gutter="16" align="middle">
+        <el-col :span="8">
+          <el-input
+            v-model="query.keyword"
+            placeholder="搜索文档名称"
+            :prefix-icon="Search"
+            clearable
+            @keyup.enter="loadDocuments"
+          />
+        </el-col>
+        <el-col :span="5">
+          <el-select v-model="query.status" placeholder="处理状态" clearable style="width:100%">
+            <el-option label="待解析" value="pending" />
+            <el-option label="解析中" value="processing" />
+            <el-option label="已完成" value="completed" />
+            <el-option label="解析失败" value="failed" />
+          </el-select>
+        </el-col>
+        <el-col :span="4">
+          <el-button type="primary" :icon="Search" @click="loadDocuments">搜索</el-button>
+          <el-button @click="resetQuery">重置</el-button>
+        </el-col>
+      </el-row>
+    </el-card>
+
+    <el-card shadow="never">
+      <el-table :data="documents" v-loading="loading" stripe row-key="id">
+        <el-table-column prop="original_filename" label="文件名" min-width="200">
+          <template #default="{ row }">
+            <div class="filename-cell">
+              <el-icon class="file-icon"><component :is="fileIcon(row.file_type)" /></el-icon>
+              <span>{{ row.original_filename }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="格式" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" type="info">{{ row.format?.toUpperCase() }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="大小" width="100" align="center">
+          <template #default="{ row }">{{ formatSize(row.file_size) }}</template>
+        </el-table-column>
+        <el-table-column label="页数" width="70" align="center">
+          <template #default="{ row }">{{ row.page_count ?? '-' }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag :type="statusTypeMap[row.status]" size="small">
+              {{ statusLabelMap[row.status] }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="created_at" label="上传时间" width="170">
+          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="200" align="center" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              size="small"
+              text
+              type="primary"
+              @click="createExtraction(row.id)"
+            >
+              提取
+            </el-button>
+            <el-button size="small" text type="primary" @click="downloadDoc(row)">
+              下载
+            </el-button>
+            <el-button size="small" text type="danger" @click="handleDelete(row)">
+              删除
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div class="pagination-wrap">
+        <el-pagination
+          v-model:current-page="query.page"
+          :total="total"
+          :page-sizes="[10, 20, 50]"
+          v-model:page-size="query.page_size"
+          layout="total, sizes, prev, pager, next"
+          background
+          @change="loadDocuments"
+        />
+      </div>
+    </el-card>
+  </div>
+</template>
+
+<script setup>
+import { ref, reactive, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Upload, Search, Document, Film, Picture } from '@element-plus/icons-vue'
+import { documentApi } from '@/api/index'
+
+const router = useRouter()
+const loading = ref(false)
+const documents = ref([])
+const total = ref(0)
+
+const query = reactive({ keyword: '', status: '', page: 1, page_size: 10 })
+
+const statusTypeMap = {
+  pending: 'info', processing: 'warning', parsing: 'warning',
+  completed: 'success', failed: 'danger', deleted: 'info',
+}
+const statusLabelMap = {
+  pending: '待解析', processing: '处理中', parsing: '解析中',
+  completed: '已完成', failed: '失败', deleted: '已删除',
+}
+
+function fileIcon(fileType) {
+  if (!fileType) return 'Document'
+  if (fileType.includes('image')) return 'Picture'
+  if (fileType.includes('video')) return 'Film'
+  return 'Document'
+}
+
+function formatSize(bytes) {
+  if (!bytes) return '-'
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+function formatDate(str) {
+  if (!str) return '-'
+  return new Date(str).toLocaleString('zh-CN')
+}
+
+async function loadDocuments() {
+  loading.value = true
+  try {
+    const res = await documentApi.list(query)
+    documents.value = res.data.items
+    total.value = res.data.total
+  } catch {
+    ElMessage.error('加载文档列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+function resetQuery() {
+  query.keyword = ''
+  query.status = ''
+  query.page = 1
+  loadDocuments()
+}
+
+function createExtraction(docId) {
+  router.push({ path: '/extractions/create', query: { document_id: docId } })
+}
+
+async function downloadDoc(row) {
+  try {
+    const res = await documentApi.getDownloadUrl(row.id)
+    window.open(res.data.url, '_blank')
+  } catch {
+    ElMessage.error('获取下载链接失败')
+  }
+}
+
+async function handleDelete(row) {
+  await ElMessageBox.confirm(`确认删除文档「${row.original_filename}」？`, '删除确认', { type: 'warning' })
+  try {
+    await documentApi.delete(row.id)
+    ElMessage.success('删除成功')
+    loadDocuments()
+  } catch {
+    ElMessage.error('删除失败')
+  }
+}
+
+onMounted(loadDocuments)
+</script>
+
+<style scoped>
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.page-title {
+  font-size: 22px;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0;
+}
+
+.search-card {
+  margin-bottom: 16px;
+}
+
+.filename-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-icon {
+  color: #60a5fa;
+  font-size: 18px;
+}
+
+.pagination-wrap {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+</style>
