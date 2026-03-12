@@ -131,10 +131,12 @@
         <!-- 右侧操作栏 -->
         <el-col :span="8">
           <el-card header="操作" shadow="never">
-            <el-button type="primary" style="width:100%" :loading="saving" @click="submit">
-              {{ isEdit ? '保存修改' : '创建模板' }}
-            </el-button>
-            <el-button style="width:100%;margin-top:12px" @click="router.back()">取消</el-button>
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <el-button type="primary" style="width:100%" :loading="saving" @click="submit">
+                {{ isEdit ? '保存修改' : '创建模板' }}
+              </el-button>
+              <el-button style="width:100%;margin-left:0" @click="router.back()">取消</el-button>
+            </div>
           </el-card>
         </el-col>
       </el-row>

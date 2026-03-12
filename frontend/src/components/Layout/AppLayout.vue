@@ -48,7 +48,7 @@
 
       <div class="sidebar-toggle">
         <el-button :icon="toggleIcon" @click="toggleSidebar">
-          {{ isMobile ? '收起导航' : sidebarCollapsed ? '展开导航' : '折叠导航' }}
+          {{ isMobile ? '收起导航' : sidebarCollapsed ? '展开' : '折叠导航' }}
         </el-button>
       </div>
     </aside>

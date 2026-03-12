@@ -49,7 +49,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def create_tables():
     """创建所有数据库表（开发/测试环境使用，生产使用 Alembic）"""
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        # 逐表创建并检查是否已存在，避免单表已存在时导致整批建表失败
+        for table in Base.metadata.sorted_tables:
+            await conn.run_sync(lambda c, t=table: t.create(c, checkfirst=True))
 
 
 async def drop_tables():

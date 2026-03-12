@@ -313,8 +313,7 @@ select {
 .app-shell {
   position: relative;
   min-height: 100vh;
-  display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  display: flex;
   gap: 18px;
   padding: 18px;
 }
@@ -324,12 +323,16 @@ select {
   top: 18px;
   display: flex;
   flex-direction: column;
+  width: 320px;
+  min-width: 320px;
+  flex-shrink: 0;
   min-height: calc(100vh - 36px);
   padding: 18px;
   border-radius: 32px;
   background: linear-gradient(180deg, rgba(23, 51, 44, 0.96), rgba(18, 39, 34, 0.92));
   box-shadow: var(--app-shadow);
   overflow: hidden;
+  transition: width 0.28s ease, min-width 0.28s ease, padding 0.28s ease;
 }
 
 .app-sidebar::before {
@@ -343,6 +346,8 @@ select {
 }
 
 .app-sidebar.collapsed {
+  width: 80px;
+  min-width: 80px;
   padding-left: 12px;
   padding-right: 12px;
 }
@@ -488,6 +493,7 @@ select {
 
 .app-stage {
   min-width: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -597,8 +603,9 @@ select {
 }
 
 @media (max-width: 1200px) {
-  .app-shell {
-    grid-template-columns: 96px minmax(0, 1fr);
+  .app-sidebar:not(.mobile) {
+    width: 96px;
+    min-width: 96px;
   }
 
   .app-sidebar:not(.mobile) .brand-copy,

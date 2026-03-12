@@ -79,18 +79,20 @@
 
           <el-divider />
 
-          <el-button
-            type="primary"
-            style="width:100%"
-            :loading="uploading"
-            :disabled="fileList.length === 0"
-            @click="startUpload"
-          >
-            开始上传（{{ fileList.length }} 个文件）
-          </el-button>
-          <el-button style="width:100%;margin-top:12px" @click="router.push('/documents')">
-            取消
-          </el-button>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <el-button
+              type="primary"
+              style="width:100%"
+              :loading="uploading"
+              :disabled="fileList.length === 0"
+              @click="startUpload"
+            >
+              开始上传（{{ fileList.length }} 个文件）
+            </el-button>
+            <el-button style="width:100%;margin-left:0" @click="router.push('/documents')">
+              取消
+            </el-button>
+          </div>
         </el-card>
 
         <el-card class="mt-16" header="注意事项" shadow="never">

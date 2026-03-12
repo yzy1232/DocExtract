@@ -111,18 +111,20 @@
 
         <el-col :span="8">
           <el-card header="提交" shadow="never">
-            <el-button
-              type="primary"
-              style="width:100%"
-              size="large"
-              :loading="submitting"
-              @click="submit"
-            >
-              提交提取任务
-            </el-button>
-            <el-button style="width:100%;margin-top:12px" @click="router.push('/extractions')">
-              取消
-            </el-button>
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <el-button
+                type="primary"
+                style="width:100%"
+                size="large"
+                :loading="submitting"
+                @click="submit"
+              >
+                提交提取任务
+              </el-button>
+              <el-button style="width:100%;margin-left:0" @click="router.push('/extractions')">
+                取消
+              </el-button>
+            </div>
 
             <el-divider />
 
