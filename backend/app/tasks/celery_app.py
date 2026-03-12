@@ -36,4 +36,9 @@ celery_app.conf.update(
     # Worker 并发
     worker_prefetch_multiplier=1,
     worker_concurrency=settings.CELERY_MAX_WORKERS,
+    # 保持与未来 Celery 版本的兼容：在启动时重试 broker 连接
+    broker_connection_retry_on_startup=True,
+    # 使 worker 发布事件，以便 Flower 能够通过 inspector 获取队列/任务状态
+    worker_send_task_events=True,
+    task_send_sent_event=True,
 )

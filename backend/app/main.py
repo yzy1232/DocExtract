@@ -59,6 +59,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"对象存储初始化失败: {e}")
 
+    # 尝试创建系统默认数据（角色、默认管理员）
+    try:
+        from app.core.init_defaults import ensure_default_roles_and_admin
+
+        await ensure_default_roles_and_admin()
+        logger.info("默认角色与管理员初始化完成（若需要）")
+    except Exception as e:
+        logger.warning(f"默认数据初始化失败: {e}")
+
     yield  # 应用运行期间
 
     # 关闭

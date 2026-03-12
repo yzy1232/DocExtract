@@ -167,6 +167,14 @@ class Settings(BaseSettings):
     LOG_FORMAT: str = "json"         # json / text
     LOG_FILE: Optional[str] = None
 
+    # ========================
+    # 默认管理员用配置（首次启动自动创建）
+    # ========================
+    AUTO_CREATE_ADMIN: bool = True
+    DEFAULT_ADMIN_USERNAME: str = "admin"
+    DEFAULT_ADMIN_PASSWORD: str = "admin123"
+    DEFAULT_ADMIN_EMAIL: str = "admin@example.com"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

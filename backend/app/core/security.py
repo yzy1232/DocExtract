@@ -12,12 +12,19 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def hash_password(password: str) -> str:
     """对密码进行 bcrypt 哈希"""
-    return pwd_context.hash(password)
+    # 为避免 bcrypt 的 72 字节限制，先使用 SHA-256 对任意长度的密码做摘要，再对摘要结果进行 bcrypt 哈希
+    import hashlib
+
+    digest = hashlib.sha256((password or "").encode("utf-8")).hexdigest()
+    return pwd_context.hash(digest)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """验证密码"""
-    return pwd_context.verify(plain_password, hashed_password)
+    import hashlib
+
+    digest = hashlib.sha256((plain_password or "").encode("utf-8")).hexdigest()
+    return pwd_context.verify(digest, hashed_password)
 
 
 def create_access_token(subject: str, expires_delta: Optional[timedelta] = None) -> str:
