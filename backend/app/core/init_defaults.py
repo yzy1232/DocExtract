@@ -95,6 +95,19 @@ async def ensure_default_roles_and_admin() -> None:
                 await session.flush()
                 await session.commit()
                 logger.info(f"创建默认管理员: {username}")
+            except IntegrityError:
+                # 唯一约束冲突（可能另一个进程/线程已创建该用户），回滚并尝试提升已有用户为超级管理员
+                await session.rollback()
+                result = await session.execute(select(User).where(User.username == username))
+                existing = result.scalar_one_or_none()
+                if existing:
+                    existing.is_superuser = True
+                    existing.status = UserStatus.ACTIVE
+                    await session.commit()
+                    logger.info(f"已将现有用户 {username} 提升为超级管理员（冲突处理）")
+                else:
+                    logger.warning("创建管理员时发生唯一约束冲突，但未找到现有用户")
             except Exception as e:
+                await session.rollback()
                 logger.warning(f"默认数据初始化失败: {e}")
                 return
