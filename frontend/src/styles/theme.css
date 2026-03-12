@@ -331,6 +331,17 @@ select {
   border-radius: 32px;
   background: linear-gradient(180deg, rgba(23, 51, 44, 0.96), rgba(18, 39, 34, 0.92));
   box-shadow: var(--app-shadow);
+  /* 防止圆角处背景或子元素渲染出白线的修复 */
+  background-color: rgba(23, 51, 44, 0.96);
+  -webkit-background-clip: padding-box;
+  background-clip: padding-box;
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  will-change: transform, box-shadow;
+  /* 更宽的内阴影覆盖四边子像素缝隙（低透明度） */
+  box-shadow: var(--app-shadow), inset 0 0 0 1px rgba(18, 39, 34, 0.04);
   overflow: hidden;
   transition: width 0.28s ease, min-width 0.28s ease, padding 0.28s ease;
 }
@@ -424,6 +435,25 @@ select {
   --el-menu-base-level-padding: 14px;
 }
 
+/* 额外强制针对内部容器的抗锯齿/裁剪处理，防止子元素在圆角处出现缝隙 */
+.app-sidebar > * {
+  -webkit-background-clip: padding-box;
+  background-clip: padding-box;
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
+/* 确保 el-menu 不会绘制自身背景或边框导致亮线 */
+.app-sidebar .nav-menu.el-menu,
+.app-sidebar .nav-menu.el-menu::before,
+.app-sidebar .nav-menu.el-menu::after {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
 .nav-menu :is(.el-menu-item, .el-sub-menu__title) {
   height: auto;
   line-height: 1.35;
@@ -457,8 +487,10 @@ select {
 .sidebar-footer-card {
   padding: 16px;
   border-radius: 22px;
-  background: rgba(255, 250, 240, 0.08);
-  border: 1px solid rgba(255, 250, 240, 0.1);
+  background: rgba(255, 250, 240, 0.06);
+  /* 去掉浅色边框，改用内阴影以避免在圆角处出现亮线 */
+  border: none;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
   color: rgba(247, 239, 224, 0.86);
 }
 
