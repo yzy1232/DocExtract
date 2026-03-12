@@ -1,6 +1,12 @@
 <template>
-  <div class="system-config">
-    <h2 class="page-title">系统配置</h2>
+  <div class="system-config page-shell">
+    <section class="page-hero">
+      <div class="page-heading">
+        <span class="page-kicker">SYSTEM SETTINGS</span>
+        <h2 class="page-title">系统配置</h2>
+        <p class="page-subtitle">维护模型接入、默认策略与系统运行参数，把底层能力与前台业务使用衔接起来。</p>
+      </div>
+    </section>
 
     <el-tabs v-model="activeTab" type="border-card">
       <!-- LLM 配置 -->
@@ -283,13 +289,6 @@ onMounted(loadLLMConfigs)
 </script>
 
 <style scoped>
-.page-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0 0 24px;
-}
-
 .tab-header {
   margin-bottom: 16px;
 }

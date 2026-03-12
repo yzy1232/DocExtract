@@ -1,9 +1,15 @@
 <template>
-  <div class="document-upload">
-    <div class="page-header">
-      <el-button :icon="ArrowLeft" text @click="router.push('/documents')">返回列表</el-button>
-      <h2 class="page-title">上传文档</h2>
-    </div>
+  <div class="document-upload page-shell">
+    <section class="page-hero">
+      <div class="page-heading">
+        <span class="page-kicker">UPLOAD STATION</span>
+        <h2 class="page-title">上传文档</h2>
+        <p class="page-subtitle">支持拖拽上传和多文件队列管理，上传后可以直接接入解析和抽取流程。</p>
+      </div>
+      <div class="page-actions">
+        <el-button :icon="ArrowLeft" @click="router.push('/documents')">返回列表</el-button>
+      </div>
+    </section>
 
     <el-row :gutter="24">
       <el-col :span="16">
@@ -177,20 +183,6 @@ async function startUpload() {
 </script>
 
 <style scoped>
-.page-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-.page-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0;
-}
-
 .upload-tip {
   font-size: 12px;
   color: #94a3b8;
@@ -210,8 +202,8 @@ async function startUpload() {
 
 .progress-item {
   padding: 10px;
-  background: #f8fafc;
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.56);
+  border-radius: 14px;
 }
 
 .progress-info {
@@ -232,7 +224,7 @@ async function startUpload() {
   padding-left: 18px;
   margin: 0;
   font-size: 13px;
-  color: #64748b;
+  color: #64746c;
   line-height: 2;
 }
 </style>

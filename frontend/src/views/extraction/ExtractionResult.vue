@@ -1,18 +1,22 @@
 <template>
-  <div class="extraction-result" v-loading="loading">
-    <div class="page-header">
-      <el-button :icon="ArrowLeft" text @click="router.push('/extractions')">返回列表</el-button>
-      <div style="display:flex;align-items:center;gap:12px">
+  <div class="extraction-result page-shell" v-loading="loading">
+    <section class="page-hero">
+      <div class="page-heading">
+        <span class="page-kicker">RESULT REVIEW</span>
         <h2 class="page-title">提取结果</h2>
+        <p class="page-subtitle">查看字段值、置信度和验证情况，并在需要时导出为结构化结果。</p>
+      </div>
+      <div class="page-actions">
+        <el-button :icon="ArrowLeft" @click="router.push('/extractions')">返回列表</el-button>
         <el-tag :type="statusTypeMap[task.status]" size="large">
           {{ statusLabelMap[task.status] }}
         </el-tag>
+        <template v-if="task.status === 'completed'">
+          <el-button :icon="Download" @click="exportResult('xlsx')">导出 Excel</el-button>
+          <el-button :icon="Download" type="primary" @click="exportResult('json')">导出 JSON</el-button>
+        </template>
       </div>
-      <div class="header-actions" v-if="task.status === 'completed'">
-        <el-button :icon="Download" @click="exportResult('xlsx')">导出 Excel</el-button>
-        <el-button :icon="Download" type="primary" @click="exportResult('json')">导出 JSON</el-button>
-      </div>
-    </div>
+    </section>
 
     <!-- 运行中进度条 -->
     <el-card v-if="['pending', 'running', 'queued', 'processing'].includes(task.status)" shadow="never" class="progress-card">
@@ -241,21 +245,6 @@ onBeforeUnmount(() => clearInterval(pollTimer))
 </script>
 
 <style scoped>
-.page-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 24px;
-  flex-wrap: wrap;
-}
-
-.page-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0;
-}
-
 .header-actions {
   margin-left: auto;
   display: flex;
@@ -282,13 +271,13 @@ onBeforeUnmount(() => clearInterval(pollTimer))
 .progress-status {
   font-size: 20px;
   font-weight: 600;
-  color: #1e293b;
+  color: #14201b;
   margin: 0;
 }
 
 .progress-hint {
   font-size: 13px;
-  color: #64748b;
+  color: #64746c;
   margin: 0;
 }
 
@@ -301,5 +290,12 @@ onBeforeUnmount(() => clearInterval(pollTimer))
 
 .mono {
   font-family: 'JetBrains Mono', monospace;
+}
+
+@media (max-width: 768px) {
+  .progress-center {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 </style>

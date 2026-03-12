@@ -1,9 +1,15 @@
 <template>
-  <div class="template-create">
-    <div class="page-header">
-      <el-button :icon="ArrowLeft" text @click="router.back()">返回</el-button>
-      <h2 class="page-title">{{ isEdit ? '编辑模板' : '新建模板' }}</h2>
-    </div>
+  <div class="template-create page-shell">
+    <section class="page-hero">
+      <div class="page-heading">
+        <span class="page-kicker">TEMPLATE EDITOR</span>
+        <h2 class="page-title">{{ isEdit ? '编辑模板' : '新建模板' }}</h2>
+        <p class="page-subtitle">定义字段标识、显示名称和提取描述，让模型能稳定理解你的目标结构。</p>
+      </div>
+      <div class="page-actions">
+        <el-button :icon="ArrowLeft" @click="router.back()">返回</el-button>
+      </div>
+    </section>
 
     <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
       <el-row :gutter="24">
@@ -222,20 +228,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.page-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-.page-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0;
-}
-
 .field-card {
   margin-top: 16px;
 }
@@ -252,7 +244,7 @@ onMounted(async () => {
 
 .field-item :deep(.el-card__header) {
   padding: 8px 16px;
-  background: #f8fafc;
+  background: rgba(247, 241, 232, 0.7);
 }
 
 .empty-fields {

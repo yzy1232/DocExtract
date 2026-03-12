@@ -1,203 +1,213 @@
 <template>
-  <el-container class="app-layout">
-    <!-- 左侧导航栏 -->
-    <el-aside :width="sidebarCollapsed ? '64px' : '220px'" class="sidebar">
-      <div class="sidebar-logo">
-        <img src="/favicon.svg" alt="logo" class="logo-icon" />
-        <span v-show="!sidebarCollapsed" class="logo-text">DocExtract</span>
+  <div class="app-shell">
+    <aside
+      class="app-sidebar"
+      :class="{ collapsed: sidebarCollapsed && !isMobile, mobile: isMobile, open: mobileMenuOpen }"
+    >
+      <div class="sidebar-brand">
+        <div class="brand-badge">
+          <img src="/favicon.svg" alt="logo" />
+        </div>
+        <div v-show="!sidebarCollapsed || isMobile" class="brand-copy">
+          <div class="brand-title">DocExtract</div>
+          <div class="brand-subtitle">让模板、文档和抽取结果在同一套工作流中协同运行</div>
+        </div>
       </div>
 
+      <div v-show="!sidebarCollapsed || isMobile" class="sidebar-caption">WORKSPACE</div>
+
       <el-menu
-        :default-active="route.name"
-        :collapse="sidebarCollapsed"
-        background-color="#1e293b"
-        text-color="#94a3b8"
-        active-text-color="#60a5fa"
+        :default-active="String(activeMenuName)"
+        :collapse="sidebarCollapsed && !isMobile"
+        class="nav-menu"
         router
       >
-        <el-menu-item index="Dashboard" :route="{ name: 'Dashboard' }">
-          <el-icon><House /></el-icon>
-          <template #title>工作台</template>
-        </el-menu-item>
-
-        <el-menu-item index="TemplateList" :route="{ name: 'TemplateList' }">
-          <el-icon><Collection /></el-icon>
-          <template #title>模板管理</template>
-        </el-menu-item>
-
-        <el-menu-item index="DocumentList" :route="{ name: 'DocumentList' }">
-          <el-icon><Document /></el-icon>
-          <template #title>文档管理</template>
-        </el-menu-item>
-
-        <el-menu-item index="ExtractionList" :route="{ name: 'ExtractionList' }">
-          <el-icon><MagicStick /></el-icon>
-          <template #title>提取任务</template>
-        </el-menu-item>
-
         <el-menu-item
-          v-if="authStore.isAdmin"
-          index="SystemConfig"
-          :route="{ name: 'SystemConfig' }"
+          v-for="item in visibleNavItems"
+          :key="item.name"
+          :index="item.name"
+          :route="{ name: item.name }"
+          @click="mobileMenuOpen = false"
         >
-          <el-icon><Setting /></el-icon>
-          <template #title>系统配置</template>
+          <el-icon><component :is="item.icon" /></el-icon>
+          <template #title>
+            <div class="nav-label">
+              <span class="nav-title">{{ item.label }}</span>
+              <span class="nav-hint">{{ item.description }}</span>
+            </div>
+          </template>
         </el-menu-item>
       </el-menu>
 
-      <div class="sidebar-footer">
-        <el-button
-          :icon="sidebarCollapsed ? 'Expand' : 'Fold'"
-          text
-          style="color: #94a3b8; width: 100%"
-          @click="sidebarCollapsed = !sidebarCollapsed"
-        />
+      <div v-if="!sidebarCollapsed || isMobile" class="sidebar-footer-card">
+        <strong>当前会话</strong>
+        <p>文档解析、模板维护与抽取任务都汇聚在这一套控制台中。</p>
+        <el-tag size="small" effect="plain">{{ authStore.isAdmin ? '管理员视图' : '业务视图' }}</el-tag>
+        <el-tag size="small" effect="plain" type="success">实时任务追踪</el-tag>
       </div>
-    </el-aside>
 
-    <!-- 主内容区 -->
-    <el-container>
-      <!-- 顶部 Header -->
-      <el-header class="app-header">
-        <div class="breadcrumb-area">
-          <el-breadcrumb separator="/">
-            <el-breadcrumb-item>首页</el-breadcrumb-item>
-            <el-breadcrumb-item>{{ route.meta?.title }}</el-breadcrumb-item>
-          </el-breadcrumb>
+      <div class="sidebar-toggle">
+        <el-button :icon="toggleIcon" @click="toggleSidebar">
+          {{ isMobile ? '收起导航' : sidebarCollapsed ? '展开导航' : '折叠导航' }}
+        </el-button>
+      </div>
+    </aside>
+
+    <div v-if="isMobile && mobileMenuOpen" class="app-mask" @click="mobileMenuOpen = false" />
+
+    <div class="app-stage">
+      <header class="app-topbar">
+        <div class="topbar-left">
+          <el-button class="menu-trigger" :icon="Menu" circle @click="mobileMenuOpen = true" />
+
+          <div class="topbar-title-block">
+            <div class="topbar-title">{{ currentTitle }}</div>
+            <div class="topbar-subtitle">{{ currentDescription }}</div>
+          </div>
         </div>
 
-        <div class="header-right">
+        <div class="topbar-right">
+          <div class="topbar-pills">
+            <span class="topbar-pill">
+              <el-icon><Compass /></el-icon>
+              {{ breadcrumbLabel }}
+            </span>
+            <span class="topbar-pill accent">
+              <el-icon><Timer /></el-icon>
+              {{ authStore.isAdmin ? '管理员模式' : '标准工作区' }}
+            </span>
+          </div>
+
           <el-dropdown @command="handleUserCommand">
-            <span class="user-info">
-              <el-avatar :size="32" style="background:#60a5fa">
+            <span class="topbar-user">
+              <el-avatar :size="34" style="background: linear-gradient(135deg, #1f6f5f, #d1893f); color: #fff;">
                 {{ authStore.user?.username?.[0]?.toUpperCase() }}
               </el-avatar>
-              <span class="username">{{ authStore.user?.username }}</span>
+              <span class="username">{{ authStore.user?.username || '未命名用户' }}</span>
+              <span class="user-role">{{ authStore.isAdmin ? '管理员' : '成员' }}</span>
               <el-icon><ArrowDown /></el-icon>
             </span>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="profile">个人信息</el-dropdown-item>
+                <el-dropdown-item command="dashboard">返回工作台</el-dropdown-item>
                 <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
         </div>
-      </el-header>
+      </header>
 
-      <!-- 页面内容 -->
-      <el-main class="app-main">
-        <router-view v-slot="{ Component }">
-          <transition name="fade" mode="out-in">
-            <component :is="Component" />
-          </transition>
-        </router-view>
-      </el-main>
-    </el-container>
-  </el-container>
+      <main class="app-content">
+        <div class="app-content-inner">
+          <router-view v-slot="{ Component }">
+            <transition name="page" mode="out-in">
+              <component :is="Component" />
+            </transition>
+          </router-view>
+        </div>
+      </main>
+    </div>
+  </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { Menu, Fold, Expand, House, Collection, Document, MagicStick, Setting, Compass, Timer } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+
 const sidebarCollapsed = ref(false)
+const isMobile = ref(window.innerWidth <= 992)
+const mobileMenuOpen = ref(false)
+
+const navItems = [
+  { name: 'Dashboard', label: '工作台', description: '总览核心指标与系统状态', icon: House },
+  { name: 'TemplateList', label: '模板管理', description: '维护字段结构与模板版本', icon: Collection },
+  { name: 'DocumentList', label: '文档管理', description: '上传、追踪并管理原始文档', icon: Document },
+  { name: 'ExtractionList', label: '提取任务', description: '查看任务进度与结果产出', icon: MagicStick },
+  { name: 'SystemConfig', label: '系统配置', description: '配置模型连接与运行参数', icon: Setting, adminOnly: true },
+]
+
+const pageDescriptions = {
+  Dashboard: '把文档、模板与任务的关键变化集中在一个高密度工作台中。',
+  TemplateList: '统一管理模板结构、发布状态与字段设计。',
+  TemplateCreate: '在结构化表单中定义字段规则，让提取结果更稳定。',
+  TemplateEdit: '调整字段配置与提示词，持续迭代提取精度。',
+  TemplateDetail: '查看模板信息、字段结构以及关联提取动作。',
+  DocumentList: '跟踪文档格式、状态和可下载资源，保持输入源整洁。',
+  DocumentUpload: '批量上传并立即进入解析流程，减少人工切换。',
+  ExtractionList: '关注任务运行、优先级、完成率与结果状态。',
+  ExtractionCreate: '为指定文档和模板快速发起新的抽取任务。',
+  ExtractionResult: '集中查看字段结果、置信度与导出动作。',
+  SystemConfig: '维护模型接入参数、默认策略和系统限额。',
+}
+
+const visibleNavItems = computed(() => navItems.filter((item) => !item.adminOnly || authStore.isAdmin))
+
+const activeMenuName = computed(() => {
+  const routeName = String(route.name || '')
+  const matchedItem = navItems.find((item) => item.name === routeName)
+  if (matchedItem) return routeName
+  return route.meta?.parent ? String(route.meta.parent) : 'Dashboard'
+})
+
+const currentTitle = computed(() => String(route.meta?.title || 'DocExtract'))
+const currentDescription = computed(() => pageDescriptions[String(route.name || '')] || '统一处理智能文档抽取流程。')
+const breadcrumbLabel = computed(() => {
+  const current = visibleNavItems.value.find((item) => item.name === activeMenuName.value)
+  return current ? current.label : '工作区'
+})
+const toggleIcon = computed(() => (isMobile.value ? Fold : sidebarCollapsed.value ? Expand : Fold))
+
+function handleResize() {
+  isMobile.value = window.innerWidth <= 992
+  if (!isMobile.value) {
+    mobileMenuOpen.value = false
+  }
+}
+
+function toggleSidebar() {
+  if (isMobile.value) {
+    mobileMenuOpen.value = false
+    return
+  }
+  sidebarCollapsed.value = !sidebarCollapsed.value
+}
 
 function handleUserCommand(cmd) {
+  if (cmd === 'dashboard') {
+    router.push({ name: 'Dashboard' })
+    return
+  }
+
   if (cmd === 'logout') {
     authStore.logout()
     router.push({ name: 'Login' })
   }
 }
+
+onMounted(() => {
+  window.addEventListener('resize', handleResize)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleResize)
+})
 </script>
 
 <style scoped>
-.app-layout {
-  height: 100vh;
-  overflow: hidden;
+.page-enter-active,
+.page-leave-active {
+  transition: all 0.2s ease;
 }
 
-.sidebar {
-  background: #1e293b;
-  transition: width 0.3s;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.sidebar-logo {
-  height: 64px;
-  display: flex;
-  align-items: center;
-  padding: 0 20px;
-  border-bottom: 1px solid #334155;
-  gap: 10px;
-  overflow: hidden;
-}
-
-.logo-icon {
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-}
-
-.logo-text {
-  color: #f1f5f9;
-  font-size: 18px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.sidebar-footer {
-  margin-top: auto;
-  padding: 8px;
-  border-top: 1px solid #334155;
-}
-
-.app-header {
-  background: white;
-  border-bottom: 1px solid #e2e8f0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 24px;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  color: #475569;
-}
-
-.username {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.app-main {
-  background: #f8fafc;
-  overflow-y: auto;
-  padding: 24px;
-}
-
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.15s ease;
-}
-.fade-enter-from,
-.fade-leave-to {
+.page-enter-from,
+.page-leave-to {
   opacity: 0;
+  transform: translateY(10px);
 }
 </style>

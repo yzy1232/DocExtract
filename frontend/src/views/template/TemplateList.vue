@@ -1,13 +1,18 @@
 <template>
-  <div class="template-list">
-    <div class="page-header">
-      <h2 class="page-title">模板管理</h2>
-      <el-button type="primary" :icon="Plus" @click="router.push('/templates/create')">
-        新建模板
-      </el-button>
-    </div>
+  <div class="template-list page-shell">
+    <section class="page-hero">
+      <div class="page-heading">
+        <span class="page-kicker">TEMPLATE LIBRARY</span>
+        <h2 class="page-title">模板管理</h2>
+        <p class="page-subtitle">维护抽取模板、字段结构和发布状态，保证不同文档场景下的输出一致性。</p>
+      </div>
+      <div class="page-actions">
+        <el-button type="primary" :icon="Plus" @click="router.push('/templates/create')">
+          新建模板
+        </el-button>
+      </div>
+    </section>
 
-    <!-- 搜索栏 -->
     <el-card shadow="never" class="search-card">
       <el-row :gutter="16" align="middle">
         <el-col :span="8">
@@ -33,7 +38,6 @@
       </el-row>
     </el-card>
 
-    <!-- 表格 -->
     <el-card shadow="never">
       <el-table :data="templates" v-loading="loading" stripe row-key="id" style="width:100%">
         <el-table-column prop="name" label="模板名称" min-width="180">
@@ -155,27 +159,11 @@ onMounted(loadTemplates)
 </script>
 
 <style scoped>
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.page-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0;
-}
-
 .search-card {
   margin-bottom: 16px;
 }
 
 .pagination-wrap {
   margin-top: 16px;
-  display: flex;
-  justify-content: flex-end;
 }
 </style>

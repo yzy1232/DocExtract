@@ -1,13 +1,18 @@
 <template>
-  <div class="extraction-list">
-    <div class="page-header">
-      <h2 class="page-title">提取任务</h2>
-      <el-button type="primary" :icon="Plus" @click="router.push('/extractions/create')">
-        新建任务
-      </el-button>
-    </div>
+  <div class="extraction-list page-shell">
+    <section class="page-hero">
+      <div class="page-heading">
+        <span class="page-kicker">TASK MONITOR</span>
+        <h2 class="page-title">提取任务</h2>
+        <p class="page-subtitle">按状态、优先级和进度跟踪任务运行，把结果导出和问题排查都收敛到一个视图中。</p>
+      </div>
+      <div class="page-actions">
+        <el-button type="primary" :icon="Plus" @click="router.push('/extractions/create')">
+          新建任务
+        </el-button>
+      </div>
+    </section>
 
-    <!-- 搜索 -->
     <el-card shadow="never" class="search-card">
       <el-row :gutter="16" align="middle">
         <el-col :span="5">
@@ -181,20 +186,6 @@ onBeforeUnmount(() => clearInterval(timer))
 </script>
 
 <style scoped>
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.page-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0;
-}
-
 .search-card {
   margin-bottom: 16px;
 }
@@ -205,7 +196,5 @@ onBeforeUnmount(() => clearInterval(timer))
 
 .pagination-wrap {
   margin-top: 16px;
-  display: flex;
-  justify-content: flex-end;
 }
 </style>

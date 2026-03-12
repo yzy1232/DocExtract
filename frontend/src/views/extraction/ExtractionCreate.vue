@@ -1,9 +1,15 @@
 <template>
-  <div class="extraction-create">
-    <div class="page-header">
-      <el-button :icon="ArrowLeft" text @click="router.push('/extractions')">返回列表</el-button>
-      <h2 class="page-title">新建提取任务</h2>
-    </div>
+  <div class="extraction-create page-shell">
+    <section class="page-hero">
+      <div class="page-heading">
+        <span class="page-kicker">NEW EXTRACTION</span>
+        <h2 class="page-title">新建提取任务</h2>
+        <p class="page-subtitle">选择文档、模板和优先级后提交任务，系统会在后台异步处理并持续更新结果状态。</p>
+      </div>
+      <div class="page-actions">
+        <el-button :icon="ArrowLeft" @click="router.push('/extractions')">返回列表</el-button>
+      </div>
+    </section>
 
     <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
       <el-row :gutter="24">
@@ -217,20 +223,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.page-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-.page-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0;
-}
-
 .mt-16 {
   margin-top: 16px;
 }

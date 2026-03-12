@@ -1,0 +1,701 @@
+:root {
+  color-scheme: light;
+  --app-bg: #f3efe7;
+  --app-bg-soft: #fbf8f3;
+  --app-surface: rgba(255, 252, 247, 0.86);
+  --app-surface-strong: #fffdf9;
+  --app-surface-quiet: #f7f1e8;
+  --app-border: rgba(37, 64, 52, 0.12);
+  --app-border-strong: rgba(37, 64, 52, 0.18);
+  --app-text: #1f2a24;
+  --app-text-secondary: #55635b;
+  --app-text-tertiary: #7f8a83;
+  --app-primary: #1f6f5f;
+  --app-primary-deep: #194f48;
+  --app-primary-soft: rgba(31, 111, 95, 0.12);
+  --app-accent: #d1893f;
+  --app-accent-soft: rgba(209, 137, 63, 0.16);
+  --app-danger-soft: rgba(194, 76, 59, 0.16);
+  --app-shadow: 0 24px 60px rgba(62, 53, 39, 0.1);
+  --app-shadow-soft: 0 12px 32px rgba(62, 53, 39, 0.08);
+  --app-radius-xl: 28px;
+  --app-radius-lg: 22px;
+  --app-radius-md: 16px;
+  --app-radius-sm: 12px;
+  --el-color-primary: var(--app-primary);
+  --el-color-primary-light-3: #3e8f7e;
+  --el-color-primary-light-5: #67aa9c;
+  --el-color-primary-light-7: #95c5ba;
+  --el-color-primary-light-8: #b5d7cf;
+  --el-color-primary-light-9: #d4ebe5;
+  --el-color-primary-dark-2: var(--app-primary-deep);
+  --el-border-radius-base: 14px;
+  --el-border-radius-small: 10px;
+  --el-border-color: rgba(37, 64, 52, 0.12);
+  --el-border-color-light: rgba(37, 64, 52, 0.08);
+  --el-fill-color-blank: rgba(255, 255, 255, 0.78);
+  --el-bg-color-page: transparent;
+  --el-bg-color: rgba(255, 255, 255, 0.78);
+  --el-text-color-primary: var(--app-text);
+  --el-text-color-regular: var(--app-text-secondary);
+  --el-text-color-secondary: var(--app-text-tertiary);
+  --el-box-shadow-light: 0 16px 36px rgba(62, 53, 39, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: 'Segoe UI Variable Display', 'Aptos', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  color: var(--app-text);
+  background:
+    radial-gradient(circle at top left, rgba(209, 137, 63, 0.12), transparent 30%),
+    radial-gradient(circle at 85% 15%, rgba(31, 111, 95, 0.14), transparent 24%),
+    linear-gradient(180deg, #f8f3ec 0%, #f2ede4 45%, #eee9df 100%);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(31, 111, 95, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(31, 111, 95, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.45), transparent 90%);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+#app {
+  position: relative;
+}
+
+.app-root {
+  min-height: 100vh;
+}
+
+.page-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.page-hero {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 28px 30px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-xl);
+  background:
+    linear-gradient(135deg, rgba(255, 253, 249, 0.95), rgba(249, 243, 233, 0.82)),
+    var(--app-surface-strong);
+  box-shadow: var(--app-shadow-soft);
+  overflow: hidden;
+}
+
+.page-hero::after {
+  content: '';
+  position: absolute;
+  right: -64px;
+  top: -42px;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(31, 111, 95, 0.18), transparent 65%);
+}
+
+.page-heading,
+.page-header {
+  position: relative;
+  z-index: 1;
+}
+
+.page-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.page-kicker {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--app-primary-soft);
+  color: var(--app-primary-deep);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.page-title {
+  margin: 0;
+  font-family: 'Bahnschrift', 'Segoe UI Variable Display', sans-serif;
+  font-size: clamp(28px, 3vw, 40px);
+  line-height: 1.04;
+  letter-spacing: -0.03em;
+  color: #14201b;
+}
+
+.page-subtitle {
+  margin: 0;
+  max-width: 720px;
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--app-text-secondary);
+}
+
+.page-actions,
+.header-actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.inline-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.metric-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(37, 64, 52, 0.08);
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.metric-chip strong {
+  color: var(--app-text);
+  font-size: 13px;
+}
+
+.page-shell .el-card,
+.page-shell .el-tabs--border-card,
+.page-shell .el-alert {
+  border: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow-soft);
+}
+
+.page-shell .el-card {
+  border-radius: var(--app-radius-lg);
+  background: var(--app-surface);
+  backdrop-filter: blur(14px);
+}
+
+.page-shell .el-card__header {
+  padding: 18px 22px;
+  border-bottom: 1px solid rgba(37, 64, 52, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(255, 255, 255, 0));
+}
+
+.page-shell .el-card__body {
+  padding: 22px;
+}
+
+.page-shell .search-card .el-card__body {
+  padding: 18px 20px;
+}
+
+.page-shell .el-input__wrapper,
+.page-shell .el-select__wrapper,
+.page-shell .el-textarea__inner,
+.page-shell .el-date-editor.el-input__wrapper,
+.page-shell .el-input-number {
+  border-radius: 14px;
+  box-shadow: none;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.page-shell .el-input__wrapper.is-focus,
+.page-shell .el-select__wrapper.is-focused,
+.page-shell .el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px rgba(31, 111, 95, 0.24) inset;
+}
+
+.page-shell .el-table {
+  --el-table-border-color: rgba(37, 64, 52, 0.08);
+  --el-table-row-hover-bg-color: rgba(31, 111, 95, 0.06);
+  --el-table-header-bg-color: rgba(247, 241, 232, 0.8);
+  --el-table-bg-color: transparent;
+  --el-fill-color-light: rgba(255, 255, 255, 0.56);
+}
+
+.page-shell .el-table tr,
+.page-shell .el-table th.el-table__cell,
+.page-shell .el-table td.el-table__cell {
+  background: transparent;
+}
+
+.page-shell .el-table .cell {
+  color: var(--app-text);
+}
+
+.page-shell .el-tag {
+  border-radius: 999px;
+  padding: 0 10px;
+}
+
+.page-shell .el-button {
+  border-radius: 14px;
+  font-weight: 600;
+}
+
+.page-shell .el-button--primary {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--app-primary), #2b8a76);
+}
+
+.page-shell .el-button--default,
+.page-shell .el-button.is-text,
+.page-shell .el-button.is-link {
+  background: rgba(255, 255, 255, 0.64);
+  border-color: rgba(37, 64, 52, 0.1);
+}
+
+.page-shell .el-pagination {
+  padding-top: 10px;
+}
+
+.page-shell .el-tabs--border-card {
+  background: var(--app-surface);
+  border-radius: var(--app-radius-lg);
+  overflow: hidden;
+}
+
+.page-shell .el-tabs--border-card > .el-tabs__header {
+  background: rgba(247, 241, 232, 0.78);
+  border-bottom-color: rgba(37, 64, 52, 0.08);
+}
+
+.page-shell .el-tabs--border-card > .el-tabs__content {
+  padding: 24px;
+}
+
+.page-shell .pagination-wrap {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.app-shell {
+  position: relative;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 18px;
+  padding: 18px;
+}
+
+.app-sidebar {
+  position: sticky;
+  top: 18px;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 36px);
+  padding: 18px;
+  border-radius: 32px;
+  background: linear-gradient(180deg, rgba(23, 51, 44, 0.96), rgba(18, 39, 34, 0.92));
+  box-shadow: var(--app-shadow);
+  overflow: hidden;
+}
+
+.app-sidebar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at top right, rgba(209, 137, 63, 0.26), transparent 26%),
+    radial-gradient(circle at left 20%, rgba(69, 164, 140, 0.18), transparent 22%);
+  pointer-events: none;
+}
+
+.app-sidebar.collapsed {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.sidebar-brand,
+.sidebar-caption,
+.nav-menu,
+.sidebar-footer-card,
+.sidebar-toggle {
+  position: relative;
+  z-index: 1;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 8px 20px;
+}
+
+.brand-badge {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(255, 245, 229, 0.2), rgba(209, 137, 63, 0.38));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.brand-badge img {
+  width: 28px;
+  height: 28px;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+.brand-title {
+  font-family: 'Bahnschrift', 'Segoe UI Variable Display', sans-serif;
+  font-size: 24px;
+  font-weight: 700;
+  color: #f9f3e7;
+  letter-spacing: -0.03em;
+}
+
+.brand-subtitle {
+  margin-top: 4px;
+  color: rgba(240, 232, 216, 0.7);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sidebar-caption {
+  padding: 6px 10px 12px;
+  color: rgba(240, 232, 216, 0.55);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.nav-menu {
+  flex: 1;
+  border-right: none;
+  background: transparent;
+}
+
+.nav-menu.el-menu {
+  --el-menu-bg-color: transparent;
+  --el-menu-hover-bg-color: rgba(255, 255, 255, 0.08);
+  --el-menu-text-color: rgba(240, 232, 216, 0.72);
+  --el-menu-active-color: #fff7eb;
+  --el-menu-base-level-padding: 14px;
+}
+
+.nav-menu :is(.el-menu-item, .el-sub-menu__title) {
+  height: auto;
+  line-height: 1.35;
+  margin-bottom: 8px;
+  border-radius: 18px;
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+.nav-menu .el-menu-item.is-active {
+  background: linear-gradient(135deg, rgba(255, 247, 235, 0.16), rgba(209, 137, 63, 0.18));
+  box-shadow: inset 0 0 0 1px rgba(255, 247, 235, 0.08);
+}
+
+.nav-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.nav-hint {
+  font-size: 12px;
+  color: rgba(240, 232, 216, 0.58);
+}
+
+.sidebar-footer-card {
+  padding: 16px;
+  border-radius: 22px;
+  background: rgba(255, 250, 240, 0.08);
+  border: 1px solid rgba(255, 250, 240, 0.1);
+  color: rgba(247, 239, 224, 0.86);
+}
+
+.sidebar-footer-card strong {
+  display: block;
+  font-size: 14px;
+  color: #fff7eb;
+}
+
+.sidebar-footer-card p {
+  margin: 8px 0 14px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.sidebar-footer-card .el-tag {
+  margin-right: 8px;
+  margin-bottom: 8px;
+}
+
+.sidebar-toggle {
+  margin-top: 12px;
+}
+
+.sidebar-toggle .el-button {
+  width: 100%;
+  justify-content: center;
+  background: rgba(255, 250, 240, 0.08);
+  border-color: rgba(255, 250, 240, 0.08);
+  color: #f6edde;
+}
+
+.app-stage {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.app-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 22px;
+  border: 1px solid var(--app-border);
+  border-radius: 28px;
+  background: rgba(255, 252, 247, 0.8);
+  box-shadow: var(--app-shadow-soft);
+  backdrop-filter: blur(14px);
+}
+
+.topbar-left,
+.topbar-right,
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.topbar-left {
+  min-width: 0;
+  flex: 1;
+}
+
+.topbar-title-block {
+  min-width: 0;
+}
+
+.topbar-title {
+  font-family: 'Bahnschrift', 'Segoe UI Variable Display', sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: #14201b;
+}
+
+.topbar-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--app-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-pills {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.topbar-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(31, 111, 95, 0.08);
+  color: var(--app-primary-deep);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.topbar-pill.accent {
+  background: var(--app-accent-soft);
+  color: #9a5c1c;
+}
+
+.menu-trigger {
+  display: none;
+}
+
+.topbar-user {
+  padding: 8px 12px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(37, 64, 52, 0.08);
+  color: var(--app-text-secondary);
+  cursor: pointer;
+}
+
+.topbar-user .username {
+  font-weight: 700;
+  color: var(--app-text);
+}
+
+.app-content {
+  min-height: calc(100vh - 130px);
+  padding: 6px 2px 16px;
+}
+
+.app-content-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.app-mask {
+  display: none;
+}
+
+@media (max-width: 1200px) {
+  .app-shell {
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+
+  .app-sidebar:not(.mobile) .brand-copy,
+  .app-sidebar:not(.mobile) .sidebar-caption,
+  .app-sidebar:not(.mobile) .nav-hint,
+  .app-sidebar:not(.mobile) .sidebar-footer-card {
+    display: none;
+  }
+
+  .app-sidebar:not(.mobile) .brand-badge {
+    margin: 0 auto;
+  }
+}
+
+@media (max-width: 992px) {
+  .app-shell {
+    display: block;
+    padding: 14px;
+  }
+
+  .app-sidebar {
+    position: fixed;
+    left: 14px;
+    top: 14px;
+    bottom: 14px;
+    width: min(86vw, 320px);
+    min-height: auto;
+    transform: translateX(-115%);
+    transition: transform 0.28s ease;
+    z-index: 30;
+  }
+
+  .app-sidebar.mobile.open {
+    transform: translateX(0);
+  }
+
+  .app-mask {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(20, 32, 27, 0.28);
+    backdrop-filter: blur(4px);
+    z-index: 20;
+  }
+
+  .menu-trigger {
+    display: inline-flex;
+  }
+
+  .topbar-pills {
+    display: none;
+  }
+
+  .app-topbar {
+    padding: 16px 18px;
+  }
+
+  .page-hero {
+    padding: 22px 22px;
+  }
+}
+
+@media (max-width: 768px) {
+  .page-hero,
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .page-actions,
+  .header-actions {
+    width: 100%;
+  }
+
+  .page-actions .el-button,
+  .header-actions .el-button {
+    flex: 1;
+    min-width: 120px;
+  }
+
+  .page-shell .el-card__body,
+  .page-shell .el-card__header,
+  .page-shell .el-tabs--border-card > .el-tabs__content {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .topbar-user .username,
+  .topbar-user .user-role {
+    display: none;
+  }
+
+  .topbar-title {
+    font-size: 18px;
+  }
+
+  .page-title {
+    font-size: 28px;
+  }
+}

@@ -1,13 +1,18 @@
 <template>
-  <div class="document-list">
-    <div class="page-header">
-      <h2 class="page-title">文档管理</h2>
-      <el-button type="primary" :icon="Upload" @click="router.push('/documents/upload')">
-        上传文档
-      </el-button>
-    </div>
+  <div class="document-list page-shell">
+    <section class="page-hero">
+      <div class="page-heading">
+        <span class="page-kicker">DOCUMENT PIPELINE</span>
+        <h2 class="page-title">文档管理</h2>
+        <p class="page-subtitle">集中查看文件格式、处理状态和下载动作，把原始文档输入源维护得更干净。</p>
+      </div>
+      <div class="page-actions">
+        <el-button type="primary" :icon="Upload" @click="router.push('/documents/upload')">
+          上传文档
+        </el-button>
+      </div>
+    </section>
 
-    <!-- 搜索 -->
     <el-card shadow="never" class="search-card">
       <el-row :gutter="16" align="middle">
         <el-col :span="8">
@@ -190,20 +195,6 @@ onMounted(loadDocuments)
 </script>
 
 <style scoped>
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.page-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0;
-}
-
 .search-card {
   margin-bottom: 16px;
 }
@@ -215,13 +206,11 @@ onMounted(loadDocuments)
 }
 
 .file-icon {
-  color: #60a5fa;
+  color: #1f6f5f;
   font-size: 18px;
 }
 
 .pagination-wrap {
   margin-top: 16px;
-  display: flex;
-  justify-content: flex-end;
 }
 </style>

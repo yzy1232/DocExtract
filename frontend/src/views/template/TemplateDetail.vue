@@ -1,8 +1,13 @@
 <template>
-  <div class="template-detail" v-loading="loading">
-    <div class="page-header">
-      <el-button :icon="ArrowLeft" text @click="router.push('/templates')">返回列表</el-button>
-      <div class="header-actions">
+  <div class="template-detail page-shell" v-loading="loading">
+    <section class="page-hero">
+      <div class="page-heading">
+        <span class="page-kicker">TEMPLATE DETAIL</span>
+        <h2 class="page-title">{{ template.name || '模板详情' }}</h2>
+        <p class="page-subtitle">查看模板版本、字段定义与系统提示词，并直接基于此模板发起新的提取任务。</p>
+      </div>
+      <div class="page-actions">
+        <el-button :icon="ArrowLeft" @click="router.push('/templates')">返回列表</el-button>
         <el-tag :type="statusTypeMap[template.status]" size="large">
           {{ statusLabelMap[template.status] }}
         </el-tag>
@@ -10,7 +15,7 @@
           编辑
         </el-button>
       </div>
-    </div>
+    </section>
 
     <el-row :gutter="24" v-if="template.id">
       <el-col :span="16">
@@ -116,13 +121,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
-}
-
 .header-actions {
   display: flex;
   align-items: center;
@@ -142,5 +140,11 @@ onMounted(async () => {
   font-size: 12px;
   white-space: pre-wrap;
   line-height: 1.7;
+}
+
+@media (max-width: 768px) {
+  .header-actions {
+    width: 100%;
+  }
 }
 </style>
