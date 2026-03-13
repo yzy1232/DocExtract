@@ -13,7 +13,8 @@ from app.core.storage import storage
 from app.core.exceptions import (
     NotFoundException, FileTooLargeException, UnsupportedFileTypeException, StorageException
 )
-from app.processors.factory import get_processor, is_supported_type, get_document_format
+from app.processors.factory import get_processor, get_document_format, suggest_tags
+from app.processors.mime_resolver import normalize_mime_type
 from app.config import settings
 
 
@@ -34,15 +35,20 @@ class DocumentService:
         upload_ip: Optional[str] = None,
     ) -> Document:
         """上传并异步触发解析流程"""
+        normalized_mime_type = normalize_mime_type(mime_type, filename)
+
         # 安全校验
         if len(file_content) > settings.MAX_UPLOAD_SIZE:
             raise FileTooLargeException(settings.MAX_UPLOAD_SIZE // (1024 * 1024))
-        if mime_type not in settings.ALLOWED_MIME_TYPES:
-            raise UnsupportedFileTypeException(mime_type)
+        if normalized_mime_type not in settings.ALLOWED_MIME_TYPES:
+            raise UnsupportedFileTypeException(normalized_mime_type)
 
         file_hash = storage.calculate_sha256(file_content)
-        doc_format = get_document_format(mime_type)
+        doc_format = get_document_format(normalized_mime_type, filename=filename)
         doc_id = str(uuid.uuid4())
+        base_tags = tags or []
+        dynamic_tags = suggest_tags(normalized_mime_type, filename=filename)
+        merged_tags = sorted(set(base_tags + dynamic_tags))
 
         # 上传到对象存储
         try:
@@ -53,11 +59,11 @@ class DocumentService:
                 object_name=storage_key,
                 data=io.BytesIO(file_content),
                 length=len(file_content),
-                content_type=mime_type,
+                content_type=normalized_mime_type,
                 metadata={"original_filename": filename},
             )
         except Exception as e:
-            logger.exception("上传对象存储失败: filename=%s mime_type=%s owner_id=%s", filename, mime_type, owner_id)
+            logger.exception("上传对象存储失败: filename=%s mime_type=%s owner_id=%s", filename, normalized_mime_type, owner_id)
             raise StorageException(f"文件上传到存储服务失败: {str(e)}")
 
         # 创建文档记录
@@ -67,13 +73,13 @@ class DocumentService:
             name=filename,
             display_name=filename,
             format=DocumentFormat(doc_format),
-            mime_type=mime_type,
+            mime_type=normalized_mime_type,
             file_size=len(file_content),
             file_hash=file_hash,
             storage_path=storage_key,
             storage_bucket=settings.STORAGE_BUCKET_DOCUMENTS,
             status=DocumentStatus.UPLOADED,
-            tags=tags or [],
+            tags=merged_tags,
             upload_ip=upload_ip,
         )
         self.db.add(document)
@@ -110,6 +116,10 @@ class DocumentService:
             file_content = storage.download_file(
                 document.storage_bucket, document.storage_path
             )
+
+            document.mime_type = normalize_mime_type(document.mime_type, document.name)
+            document.format = DocumentFormat(get_document_format(document.mime_type, filename=document.name))
+            document.tags = sorted(set((document.tags or []) + suggest_tags(document.mime_type, filename=document.name)))
 
             # 获取处理器
             processor = get_processor(document.mime_type)

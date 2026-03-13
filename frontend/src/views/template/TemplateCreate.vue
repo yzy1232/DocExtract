@@ -86,17 +86,17 @@
                   <el-col :span="12">
                     <el-form-item
                       :prop="`fields.${idx}.name`"
-                      label="字段标识"
-                      :rules="[{ required: true, message: '请输入字段标识' }, { pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/, message: '只允许字母/数字/下划线' }]"
+                        label="字段标识"
+                        :rules="[{ required: true, message: '请输入字段标识' }, { pattern: /^[\u4e00-\u9fff_a-zA-Z][\u4e00-\u9fff_a-zA-Z0-9_]*$/u, message: '字段标识只能以中文/字母/下划线开头，仅允许中文/字母/数字/下划线' }]"
                     >
                       <el-input v-model="field.name" placeholder="如: invoice_no" />
                     </el-form-item>
                   </el-col>
-                  <el-col :span="12">
-                    <el-form-item label="显示名称" :prop="`fields.${idx}.label`" :rules="[{ required: true, message: '请输入显示名称' }]">
-                      <el-input v-model="field.label" placeholder="如: 发票号码" />
-                    </el-form-item>
-                  </el-col>
+                    <el-col :span="12">
+                      <el-form-item label="显示名称" :prop="`fields.${idx}.display_name`" :rules="[{ required: true, message: '请输入显示名称' }]">
+                        <el-input v-model="field.display_name" placeholder="如: 发票号码" />
+                      </el-form-item>
+                    </el-col>
                   <el-col :span="8">
                     <el-form-item label="字段类型">
                       <el-select v-model="field.field_type" style="width:100%">
@@ -183,7 +183,7 @@ const fieldTypes = [
 function addField() {
   form.fields.push({
     name: '',
-    label: '',
+    display_name: '',
     field_type: 'text',
     required: false,
     is_array: false,

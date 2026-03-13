@@ -5,7 +5,7 @@ import uuid
 import json
 from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, delete
 from sqlalchemy.orm import selectinload
 from app.models.template import Template, TemplateField, TemplateVersion, TemplateCategory, TemplateStatus
 from app.schemas.template import TemplateCreate, TemplateUpdate, TemplateCategoryCreate
@@ -70,8 +70,36 @@ class TemplateService:
     async def update(self, template: Template, data: TemplateUpdate, updater_id: str) -> Template:
         """更新模板（自动保存新版本）"""
         update_fields = data.model_dump(exclude_none=True, exclude={"change_description"})
+
+        # 如果提交了 fields，则先处理字段替换（删除旧字段并新增）
+        fields_data = update_fields.pop("fields", None)
+
         for field, value in update_fields.items():
             setattr(template, field, value)
+
+        if fields_data is not None:
+            # 删除已有字段
+            await self.db.execute(delete(TemplateField).where(TemplateField.template_id == template.id))
+            # 添加新字段
+            for idx, field_data in enumerate(fields_data):
+                # fields_data 是来自 pydantic.model_dump() 的 dict 列表，使用 dict 取值
+                field = TemplateField(
+                    id=str(uuid.uuid4()),
+                    template_id=template.id,
+                    name=field_data.get('name'),
+                    display_name=field_data.get('display_name'),
+                    field_type=field_data.get('field_type'),
+                    description=field_data.get('description'),
+                    required=field_data.get('required', False),
+                    default_value=field_data.get('default_value'),
+                    validation_rules=field_data.get('validation_rules') or {},
+                    extraction_hints=field_data.get('extraction_hints'),
+                    region_config=field_data.get('region_config') or {},
+                    parent_field_id=field_data.get('parent_field_id'),
+                    sort_order=field_data.get('sort_order', idx),
+                )
+                self.db.add(field)
+
         template.current_version += 1
         await self.db.flush()
         await self._save_version(template, data.change_description or "更新", updater_id)

@@ -5,6 +5,7 @@ from typing import Optional
 from app.processors.base_processor import BaseDocumentProcessor
 from app.processors.pdf_processor import PDFProcessor
 from app.processors.docx_processor import DocxProcessor, ExcelProcessor, TextProcessor
+from app.processors.mime_resolver import normalize_mime_type
 
 
 _PROCESSOR_REGISTRY: dict[str, BaseDocumentProcessor] = {}
@@ -29,7 +30,8 @@ def get_processor(mime_type: str) -> Optional[BaseDocumentProcessor]:
     global _PROCESSOR_REGISTRY
     if not _PROCESSOR_REGISTRY:
         _PROCESSOR_REGISTRY = _build_registry()
-    return _PROCESSOR_REGISTRY.get(mime_type)
+    normalized_mime = normalize_mime_type(mime_type, filename="")
+    return _PROCESSOR_REGISTRY.get(normalized_mime)
 
 
 def is_supported_type(mime_type: str) -> bool:
@@ -37,8 +39,9 @@ def is_supported_type(mime_type: str) -> bool:
     return get_processor(mime_type) is not None
 
 
-def get_document_format(mime_type: str) -> str:
+def get_document_format(mime_type: str, filename: str = "") -> str:
     """根据 MIME 类型返回文档格式字符串"""
+    normalized_mime = normalize_mime_type(mime_type, filename=filename)
     mapping = {
         "application/pdf": "pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
@@ -47,9 +50,16 @@ def get_document_format(mime_type: str) -> str:
         "text/plain": "txt",
         "text/markdown": "txt",
         "text/x-markdown": "txt",
+        "application/octet-stream": "txt",
         "image/jpeg": "image",
         "image/png": "image",
         "image/tiff": "image",
         "image/bmp": "image",
     }
-    return mapping.get(mime_type, "unknown")
+    return mapping.get(normalized_mime, "txt")
+
+
+def suggest_tags(mime_type: str, filename: str = "") -> list[str]:
+    """根据文档类型生成标签。"""
+    doc_format = get_document_format(mime_type, filename=filename)
+    return [f"format:{doc_format}"]

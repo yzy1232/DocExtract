@@ -44,7 +44,7 @@
                 <el-text type="primary" class="mono">{{ row.name }}</el-text>
               </template>
             </el-table-column>
-            <el-table-column prop="label" label="名称" min-width="120" />
+            <el-table-column prop="display_name" label="名称" min-width="120" />
             <el-table-column label="类型" width="90" align="center">
               <template #default="{ row }">
                 <el-tag size="small" type="info">{{ row.field_type }}</el-tag>

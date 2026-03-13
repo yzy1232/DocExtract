@@ -24,8 +24,10 @@ class TemplateFieldCreate(BaseModel):
     @classmethod
     def validate_name(cls, v: str) -> str:
         import re
-        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", v):
-            raise ValueError("字段名必须以字母或下划线开头，只能包含字母、数字和下划线")
+        # 允许中文、英文字母或下划线开头，后续字符允许中文/英文字母/数字/下划线
+        pattern = "^[\u4e00-\u9fff_a-zA-Z][\u4e00-\u9fff_a-zA-Z0-9_]*$"
+        if not re.match(pattern, v):
+            raise ValueError("字段名必须以中文、字母或下划线开头，只能包含中文、字母、数字和下划线")
         return v
 
 
@@ -84,6 +86,8 @@ class TemplateUpdate(BaseModel):
     extraction_prompt_template: Optional[str] = None
     few_shot_examples: Optional[List[Dict[str, Any]]] = None
     change_description: Optional[str] = Field(default=None, description="版本变更说明")
+    # 允许在更新模板时同时替换字段定义（将替换为提交的字段列表）
+    fields: Optional[List[TemplateFieldCreate]] = None
 
 
 class TemplateOut(BaseModel):

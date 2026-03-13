@@ -12,6 +12,7 @@ from app.core.auth import get_current_user
 from app.models.user import User
 from app.models.document import DocumentStatus
 from app.config import settings
+from app.processors.mime_resolver import normalize_mime_type
 
 router = APIRouter(prefix="/documents", tags=["文档管理"])
 
@@ -30,10 +31,7 @@ async def upload_document(
     # 安全检查：防止路径穿越
     import os
     safe_filename = os.path.basename(file.filename)
-    # 修正某些浏览器/客户端对 Markdown 文件发送 application/octet-stream 的情况
-    mime_type = file.content_type or "application/octet-stream"
-    if mime_type == "application/octet-stream" and safe_filename.lower().endswith('.md'):
-        mime_type = "text/markdown"
+    mime_type = normalize_mime_type(file.content_type, safe_filename)
     file_content = await file.read()
 
     tag_list = [t.strip() for t in tags.split(",")] if tags else []
@@ -64,10 +62,11 @@ async def batch_upload(
         import os
         safe_filename = os.path.basename(f.filename or "unknown")
         content = await f.read()
+        mime_type = normalize_mime_type(f.content_type, safe_filename)
         doc = await svc.upload(
             file_content=content,
             filename=safe_filename,
-            mime_type=f.content_type or "application/octet-stream",
+            mime_type=mime_type,
             owner_id=current_user.id,
         )
         results.append(DocumentOut.model_validate(doc))

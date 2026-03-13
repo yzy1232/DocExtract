@@ -26,9 +26,9 @@
         </el-col>
         <el-col :span="5">
           <el-select v-model="query.status" placeholder="处理状态" clearable style="width:100%">
-            <el-option label="待解析" value="pending" />
+            <el-option label="已上传" value="uploaded" />
             <el-option label="解析中" value="processing" />
-            <el-option label="已完成" value="completed" />
+            <el-option label="已完成" value="processed" />
             <el-option label="解析失败" value="failed" />
           </el-select>
         </el-col>
@@ -120,12 +120,12 @@ const total = ref(0)
 const query = reactive({ keyword: '', status: '', page: 1, page_size: 10 })
 
 const statusTypeMap = {
-  pending: 'info', processing: 'warning', parsing: 'warning',
-  completed: 'success', failed: 'danger', deleted: 'info',
+  uploading: 'info', uploaded: 'info', processing: 'warning',
+  processed: 'success', failed: 'danger', deleted: 'info',
 }
 const statusLabelMap = {
-  pending: '待解析', processing: '处理中', parsing: '解析中',
-  completed: '已完成', failed: '失败', deleted: '已删除',
+  uploading: '上传中', uploaded: '已上传', processing: '解析中',
+  processed: '已完成', failed: '失败', deleted: '已删除',
 }
 
 function fileIcon(fileType) {

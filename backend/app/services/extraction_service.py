@@ -20,6 +20,7 @@ from app.llm.factory import get_adapter_by_provider, get_default_adapter, get_de
 from app.llm.prompt_engine import PromptEngine
 from app.core.storage import storage
 from app.config import settings
+from app.processors.mime_resolver import normalize_mime_type
 
 
 class ExtractionService:
@@ -119,7 +120,10 @@ class ExtractionService:
             file_content = storage.download_file(document.storage_bucket, document.storage_path)
 
             from app.processors.factory import get_processor
-            processor = get_processor(document.mime_type)
+            normalized_mime = normalize_mime_type(document.mime_type, document.name)
+            processor = get_processor(normalized_mime)
+            if not processor:
+                raise ValidationException(f"文档不支持解析，MIME={normalized_mime}")
             parse_result = await processor.parse(file_content, document.name)
             document_content = parse_result.full_text
 
