@@ -23,7 +23,7 @@ logger = logging.getLogger("app.api.v1.system")
 
 
 @router.get("/health", response_model=ResponseBase[dict], summary="健康检查", include_in_schema=False)
-async def health_check(db: AsyncSession = Depends(get_db)):
+async def health_check(db: AsyncSession = Depends(get_dssh b)):
     """系统健康检查端点（无需认证）"""
     status = {"api": "ok", "database": "unknown", "cache": "unknown"}
     try:
