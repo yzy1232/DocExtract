@@ -64,7 +64,15 @@ async def lifespan(app: FastAPI):
         from app.core.init_defaults import ensure_default_roles_and_admin
 
         await ensure_default_roles_and_admin()
-        logger.info("默认角色与管理员初始化完成（若需要）")
+        logger.info("默认角色与管理员初始化完成")
+    except Exception as e:
+        logger.warning(f"默认数据初始化失败: {e}")
+
+    try:
+        from app.core.init_defaults import ensure_default_llm_system_config
+
+        await ensure_default_llm_system_config()
+        logger.info("默认 LLM 系统配置初始化完成")
     except Exception as e:
         logger.warning(f"默认数据初始化失败: {e}")
 

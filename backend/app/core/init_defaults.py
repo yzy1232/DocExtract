@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from app.database import AsyncSessionLocal
 from app.models.user import User, Role, UserStatus
+from app.models.system import SystemConfig
 from app.config import settings
 from app.core.security import hash_password
 
@@ -111,3 +112,39 @@ async def ensure_default_roles_and_admin() -> None:
                 await session.rollback()
                 logger.warning(f"默认数据初始化失败: {e}")
                 return
+
+
+async def ensure_default_llm_system_config() -> None:
+    """确保 SystemConfig 中存在 default_llm_config_id 键（用于回退与 UI 读取）。
+    在首次启动时写入一条空值记录，避免后续读取出现 404。
+    """
+    if not settings.AUTO_CREATE_ADMIN:
+        # 与其他默认数据的控制保持一致，使用相同环境开关
+        return
+
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await session.execute(select(SystemConfig).where(SystemConfig.key == 'default_llm_config_id'))
+            sc = result.scalar_one_or_none()
+            if not sc:
+                new_sc = SystemConfig(
+                    id=str(uuid.uuid4()),
+                    category='system',
+                    key='default_llm_config_id',
+                    value='',
+                    default_value=None,
+                    description='系统默认LLM配置ID（自动创建）',
+                    data_type='string',
+                    is_editable=True,
+                    is_encrypted=False,
+                    updated_by=None,
+                )
+                session.add(new_sc)
+                await session.flush()
+                await session.commit()
+                logger.info('已创建默认 SystemConfig: default_llm_config_id')
+        except IntegrityError:
+            await session.rollback()
+        except Exception as e:
+            await session.rollback()
+            logger.warning(f"创建 default_llm_config_id 失败: {e}")

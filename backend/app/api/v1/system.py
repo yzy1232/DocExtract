@@ -9,8 +9,8 @@ from app.database import get_db
 from app.schemas.common import ResponseBase
 from app.core.auth import get_current_superuser
 from app.models.user import User
-from app.models.system import LLMConfig, LLMProvider, SystemConfig
-from app.llm.factory import get_adapter_by_provider, get_default_llm_config, create_adapter_from_db_config
+from app.models.system import LLMConfig, SystemConfig
+from app.llm.factory import get_default_llm_config, create_adapter_from_db_config, get_default_adapter
 from sqlalchemy import update as sqlalchemy_update
 import uuid
 from app.models.system import SystemConfig
@@ -73,7 +73,7 @@ async def list_llm_configs(
     configs = result.scalars().all()
     return ResponseBase(data=[
         {
-            "id": c.id, "name": c.name, "provider": c.provider.value,
+            "id": c.id, "name": c.name,
             "model_name": c.model_name, "base_url": c.base_url,
             "is_default": c.is_default, "is_active": c.is_active,
             "last_test_success": c.last_test_success,
@@ -89,17 +89,9 @@ async def create_llm_config(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_superuser),
 ):
-    provider_value = payload.get("provider", "custom")
-    try:
-        provider = LLMProvider(provider_value)
-    except ValueError:
-        from app.core.exceptions import ValidationException
-        raise ValidationException(f"不支持的提供商: {provider_value}")
-
     config = LLMConfig(
         id=str(uuid.uuid4()),
         name=payload["name"],
-        provider=provider,
         model_name=payload["model_name"],
         base_url=payload.get("base_url"),
         api_key_encrypted=payload.get("api_key"),   # 生产环境应加密
@@ -116,20 +108,20 @@ async def create_llm_config(
         await db.execute(
             sqlalchemy_update(LLMConfig).where(LLMConfig.id != config.id).values(is_default=False)
         )
-        # upsert system config key 'default_llm_provider'
-        result = await db.execute(select(SystemConfig).where(SystemConfig.key == 'default_llm_provider'))
+        # upsert system config key 'default_llm_config_id'
+        result = await db.execute(select(SystemConfig).where(SystemConfig.key == 'default_llm_config_id'))
         sc = result.scalar_one_or_none()
         if sc:
-            sc.value = config.provider.value
+            sc.value = config.id
             sc.updated_by = getattr(current_user, 'id', None)
         else:
             new_sc = SystemConfig(
                 id=str(uuid.uuid4()),
                 category='system',
-                key='default_llm_provider',
-                value=config.provider.value,
+                key='default_llm_config_id',
+                value=config.id,
                 default_value=None,
-                description='系统默认LLM提供商',
+                description='系统默认LLM配置ID',
                 data_type='string',
                 is_editable=True,
                 is_encrypted=False,
@@ -159,11 +151,7 @@ async def update_llm_config(
             setattr(config, field, payload[field])
     if payload.get("api_key"):  # 只有显式传入时才更新 key
         config.api_key_encrypted = payload["api_key"]
-    if payload.get("provider"):
-        try:
-            config.provider = LLMProvider(payload["provider"])
-        except ValueError:
-            pass
+    # provider 已移除，忽略 provider 字段
     await db.flush()
 
     # 如果更新将该配置设为默认，同步其它记录和系统配置
@@ -172,19 +160,19 @@ async def update_llm_config(
             await db.execute(
                 sqlalchemy_update(LLMConfig).where(LLMConfig.id != config.id).values(is_default=False)
             )
-            result = await db.execute(select(SystemConfig).where(SystemConfig.key == 'default_llm_provider'))
+            result = await db.execute(select(SystemConfig).where(SystemConfig.key == 'default_llm_config_id'))
             sc = result.scalar_one_or_none()
             if sc:
-                sc.value = config.provider.value
+                sc.value = config.id
                 sc.updated_by = getattr(current_user, 'id', None)
             else:
                 new_sc = SystemConfig(
                     id=str(uuid.uuid4()),
                     category='system',
-                    key='default_llm_provider',
-                    value=config.provider.value,
+                    key='default_llm_config_id',
+                    value=config.id,
                     default_value=None,
-                    description='系统默认LLM提供商',
+                    description='系统默认LLM配置ID',
                     data_type='string',
                     is_editable=True,
                     is_encrypted=False,
@@ -227,15 +215,15 @@ async def test_llm_config(
     start = time.time()
     success = False
     try:
-        # 优先使用 DB 中存储的凭据（支持 custom 及单独配置的提供商）
+        # 优先使用 DB 中存储的凭据（以配置中 base_url/api_key 为准）
         if config.base_url and config.api_key_encrypted:
             adapter = create_adapter_from_db_config(
-                config.provider.value,
                 config.api_key_encrypted,
                 config.base_url,
             )
         else:
-            adapter = get_adapter_by_provider(config.provider.value)
+            # 回退到系统默认适配器
+            adapter = get_default_adapter()
         success = await adapter.test_connection()
     except Exception:
         pass

@@ -1,18 +1,10 @@
 """
 系统配置相关数据模型 (LLM配置、系统设置、任务配置)
 """
-from sqlalchemy import Column, String, Boolean, Integer, DateTime, Text, JSON, Enum, Float
+from sqlalchemy import Column, String, Boolean, Integer, DateTime, Text, JSON, Float
 from sqlalchemy.sql import func
 import enum
 from app.database import Base
-
-
-class LLMProvider(str, enum.Enum):
-    OPENAI = "openai"
-    DEEPSEEK = "deepseek"
-    WENXIN = "wenxin"
-    OLLAMA = "ollama"
-    CUSTOM = "custom"
 
 
 class LLMConfig(Base):
@@ -21,7 +13,6 @@ class LLMConfig(Base):
 
     id = Column(String(36), primary_key=True)
     name = Column(String(128), nullable=False, comment="配置名称")
-    provider = Column(Enum(LLMProvider), nullable=False, comment="提供商")
     model_name = Column(String(128), nullable=False, comment="模型名称")
     api_key_encrypted = Column(Text, nullable=True, comment="加密的API密钥")
     base_url = Column(String(512), nullable=True, comment="API基础URL")

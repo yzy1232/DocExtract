@@ -82,15 +82,17 @@ def get_default_llm_config(provider: Optional[str] = None, model: Optional[str] 
     )
 
 
-def create_adapter_from_db_config(provider: str, api_key: str, base_url: str) -> BaseLLMAdapter:
+def create_adapter_from_db_config(api_key: str, base_url: str, provider: Optional[str] = None) -> BaseLLMAdapter:
     """
     使用数据库中存储的凭据直接创建适配器（跳过系统配置）。
     适用于自定义提供商或 DB 中单独配置了 base_url / api_key 的场景。
+    如果未提供 provider，会默认为 'custom'。
     """
+    prov = provider or "custom"
     return OpenAICompatibleAdapter(
         api_key=api_key or "custom",
         base_url=base_url,
-        provider=provider,
+        provider=prov,
     )
 
 
