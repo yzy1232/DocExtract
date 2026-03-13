@@ -29,16 +29,16 @@
                 <el-option
                   v-for="doc in documentOptions"
                   :key="doc.id"
-                  :label="doc.original_filename"
+                  :label="docLabel(doc)"
                   :value="doc.id"
                 >
                   <div style="display:flex;justify-content:space-between;align-items:center">
-                    <span>{{ doc.original_filename }}</span>
+                    <span>{{ docLabel(doc) }}</span>
                     <el-tag
                       :type="doc.status === 'completed' ? 'success' : 'warning'"
                       size="small"
                     >
-                      {{ doc.status }}
+                      {{ statusLabelMap[doc.status] || doc.status }}
                     </el-tag>
                   </div>
                 </el-option>
@@ -157,6 +157,15 @@ const documentsLoading = ref(false)
 const documentOptions = ref([])
 const templateOptions = ref([])
 const selectedTemplate = ref(null)
+
+const statusLabelMap = {
+  pending: '待解析', processing: '处理中', parsing: '解析中',
+  completed: '已完成', failed: '失败', deleted: '已删除',
+}
+
+function docLabel(doc) {
+  return doc.display_name || doc.name || doc.original_filename || '未命名文档'
+}
 
 const form = reactive({
   document_id: null,

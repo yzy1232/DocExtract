@@ -181,7 +181,8 @@ async function downloadDoc(row) {
 }
 
 async function handleDelete(row) {
-  await ElMessageBox.confirm(`确认删除文档「${row.original_filename}」？`, '删除确认', { type: 'warning' })
+  const filename = row.display_name || row.name || row.original_filename || '该文档'
+  await ElMessageBox.confirm(`确认删除文档「${filename}」？`, '删除确认', { type: 'warning' })
   try {
     await documentApi.delete(row.id)
     ElMessage.success('删除成功')
