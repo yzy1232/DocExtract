@@ -9,8 +9,12 @@ from app.database import get_db
 from app.schemas.common import ResponseBase
 from app.core.auth import get_current_superuser
 from app.models.user import User
-from app.models.system import LLMConfig, LLMProvider
+from app.models.system import LLMConfig, LLMProvider, SystemConfig
 from app.llm.factory import get_adapter_by_provider, get_default_llm_config, create_adapter_from_db_config
+from sqlalchemy import update as sqlalchemy_update
+import uuid
+from app.models.system import SystemConfig
+import uuid
 
 router = APIRouter(prefix="/system", tags=["系统管理"])
 
@@ -106,6 +110,33 @@ async def create_llm_config(
     )
     db.add(config)
     await db.flush()
+
+    # 如果新创建的配置设为默认，清除其它默认，并同步到 SystemConfig
+    if config.is_default:
+        await db.execute(
+            sqlalchemy_update(LLMConfig).where(LLMConfig.id != config.id).values(is_default=False)
+        )
+        # upsert system config key 'default_llm_provider'
+        result = await db.execute(select(SystemConfig).where(SystemConfig.key == 'default_llm_provider'))
+        sc = result.scalar_one_or_none()
+        if sc:
+            sc.value = config.provider.value
+            sc.updated_by = getattr(current_user, 'id', None)
+        else:
+            new_sc = SystemConfig(
+                id=str(uuid.uuid4()),
+                category='system',
+                key='default_llm_provider',
+                value=config.provider.value,
+                default_value=None,
+                description='系统默认LLM提供商',
+                data_type='string',
+                is_editable=True,
+                is_encrypted=False,
+                updated_by=getattr(current_user, 'id', None),
+            )
+            db.add(new_sc)
+        await db.flush()
     return ResponseBase(data={"id": config.id, "name": config.name})
 
 
@@ -134,6 +165,33 @@ async def update_llm_config(
         except ValueError:
             pass
     await db.flush()
+
+    # 如果更新将该配置设为默认，同步其它记录和系统配置
+    if payload.get('is_default'):
+        if config.is_default:
+            await db.execute(
+                sqlalchemy_update(LLMConfig).where(LLMConfig.id != config.id).values(is_default=False)
+            )
+            result = await db.execute(select(SystemConfig).where(SystemConfig.key == 'default_llm_provider'))
+            sc = result.scalar_one_or_none()
+            if sc:
+                sc.value = config.provider.value
+                sc.updated_by = getattr(current_user, 'id', None)
+            else:
+                new_sc = SystemConfig(
+                    id=str(uuid.uuid4()),
+                    category='system',
+                    key='default_llm_provider',
+                    value=config.provider.value,
+                    default_value=None,
+                    description='系统默认LLM提供商',
+                    data_type='string',
+                    is_editable=True,
+                    is_encrypted=False,
+                    updated_by=getattr(current_user, 'id', None),
+                )
+                db.add(new_sc)
+            await db.flush()
     return ResponseBase(data={"id": config.id, "name": config.name})
 
 
@@ -189,3 +247,69 @@ async def test_llm_config(
     await db.flush()
 
     return ResponseBase(data={"success": success, "latency_ms": latency_ms})
+
+
+@router.get('/configs', response_model=ResponseBase[list[dict]], summary='获取系统配置列表')
+async def list_system_configs(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_superuser),
+):
+    result = await db.execute(select(SystemConfig).order_by(SystemConfig.key))
+    configs = result.scalars().all()
+    return ResponseBase(data=[{
+        'id': c.id, 'category': c.category, 'key': c.key, 'value': c.value,
+        'default_value': c.default_value, 'description': c.description, 'data_type': c.data_type,
+    } for c in configs])
+
+
+@router.get('/configs/{key}', response_model=ResponseBase[dict], summary='获取指定系统配置')
+async def get_system_config(
+    key: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_superuser),
+):
+    result = await db.execute(select(SystemConfig).where(SystemConfig.key == key))
+    cfg = result.scalar_one_or_none()
+    if not cfg:
+        from app.core.exceptions import NotFoundException
+        raise NotFoundException('SystemConfig', key)
+    return ResponseBase(data={
+        'id': cfg.id, 'category': cfg.category, 'key': cfg.key, 'value': cfg.value,
+        'default_value': cfg.default_value, 'description': cfg.description, 'data_type': cfg.data_type,
+    })
+
+
+@router.put('/configs/{key}', response_model=ResponseBase[dict], summary='更新或创建系统配置')
+async def put_system_config(
+    key: str,
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_superuser),
+):
+    # payload: { value: str, category?: str, data_type?: str, description?: str }
+    result = await db.execute(select(SystemConfig).where(SystemConfig.key == key))
+    cfg = result.scalar_one_or_none()
+    if cfg:
+        if 'value' in payload:
+            cfg.value = str(payload['value'])
+        if 'description' in payload:
+            cfg.description = payload['description']
+        if 'data_type' in payload:
+            cfg.data_type = payload['data_type']
+        cfg.updated_by = getattr(current_user, 'id', None)
+    else:
+        new_cfg = SystemConfig(
+            id=str(uuid.uuid4()),
+            category=payload.get('category', 'system'),
+            key=key,
+            value=str(payload.get('value', '')),
+            default_value=payload.get('default_value'),
+            description=payload.get('description'),
+            data_type=payload.get('data_type', 'string'),
+            is_editable=True,
+            is_encrypted=False,
+            updated_by=getattr(current_user, 'id', None),
+        )
+        db.add(new_cfg)
+    await db.flush()
+    return ResponseBase(data={'key': key, 'value': payload.get('value')})

@@ -279,13 +279,47 @@ async function deleteLLM(row) {
 
 async function saveSysConfig() {
   sysConfigSaving.value = true
-  setTimeout(() => {
-    ElMessage.success('系统配置已保存')
+  try {
+    // 尝试调用后端保存（需要管理员权限），若失败则回退到 localStorage
+    try {
+      await systemApi.putSystemConfig('default_llm_provider', { value: sysConfig.default_llm_provider })
+      ElMessage.success('系统配置已保存（后端）')
+    } catch (e) {
+      localStorage.setItem('sys.default_llm_provider', sysConfig.default_llm_provider)
+      ElMessage.success('系统配置已保存（本地）')
+    }
+  } finally {
     sysConfigSaving.value = false
-  }, 600)
+  }
 }
 
-onMounted(loadLLMConfigs)
+async function loadSysConfigFromStorage() {
+  // 优先从后端读取系统配置（需要超级管理员权限）
+  try {
+    const res = await systemApi.getSystemConfig('default_llm_provider')
+    if (res?.data?.value) {
+      sysConfig.default_llm_provider = res.data.value
+      try { localStorage.setItem('sys.default_llm_provider', res.data.value) } catch {}
+      return
+    }
+  } catch (e) {
+    // 后端可能未配置或权限限制，回退到 localStorage
+  }
+
+  try {
+    const v = localStorage.getItem('sys.default_llm_provider')
+    if (v) {
+      sysConfig.default_llm_provider = v
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+onMounted(() => {
+  loadLLMConfigs()
+  loadSysConfigFromStorage()
+})
 </script>
 
 <style scoped>

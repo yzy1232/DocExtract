@@ -48,9 +48,12 @@ def get_adapter_by_provider(provider: str) -> BaseLLMAdapter:
         return create_adapter("ollama", "ollama", settings.OLLAMA_BASE_URL)
 
     if provider == "custom":
-        if not settings.CUSTOM_API_KEY and not settings.CUSTOM_BASE_URL:
+        # 当使用自定义提供商时，要求至少配置 BASE_URL；若已配置 BASE_URL，则必须同时提供 API Key
+        if not settings.CUSTOM_BASE_URL:
             raise LLMException(message="自定义提供商 BASE_URL 未配置")
-        return create_adapter("custom", settings.CUSTOM_API_KEY or "custom", settings.CUSTOM_BASE_URL)
+        if not settings.CUSTOM_API_KEY:
+            raise LLMException(message="自定义提供商 API Key 未配置")
+        return create_adapter("custom", settings.CUSTOM_API_KEY, settings.CUSTOM_BASE_URL)
 
     raise LLMException(message=f"不支持的 LLM 提供商: {provider}")
 

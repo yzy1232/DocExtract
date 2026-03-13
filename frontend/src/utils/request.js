@@ -25,6 +25,13 @@ request.interceptors.request.use(
       }
       config.params = cleaned
     }
+    // 如果请求数据是 FormData，删除默认 Content-Type，让浏览器/axios 自动设置 boundary
+    if (config.data && typeof FormData !== 'undefined' && config.data instanceof FormData) {
+      if (config.headers) {
+        delete config.headers['Content-Type']
+        delete config.headers['content-type']
+      }
+    }
     return config
   },
   (error) => Promise.reject(error)

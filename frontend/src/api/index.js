@@ -30,7 +30,6 @@ export const documentApi = {
   // 上传文档
   upload: (formData, onProgress) =>
     request.post('/documents/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: (e) => {
         if (onProgress && e.total) {
           onProgress(Math.round((e.loaded * 100) / e.total))
@@ -40,9 +39,7 @@ export const documentApi = {
 
   // 批量上传
   batchUpload: (formData) =>
-    request.post('/documents/batch-upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    }),
+    request.post('/documents/batch-upload', formData),
 
   // 文档列表
   list: (params) => request.get('/documents', { params }),
@@ -93,4 +90,8 @@ export const systemApi = {
   updateLLMConfig: (id, data) => request.put(`/system/llm-configs/${id}`, data),
   deleteLLMConfig: (id) => request.delete(`/system/llm-configs/${id}`),
   testLLMConfig: (id) => request.post(`/system/llm-configs/${id}/test`),
+  // 系统配置
+  listSystemConfigs: () => request.get('/system/configs'),
+  getSystemConfig: (key) => request.get(`/system/configs/${key}`),
+  putSystemConfig: (key, data) => request.put(`/system/configs/${key}`, data),
 }

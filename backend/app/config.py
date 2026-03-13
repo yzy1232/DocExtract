@@ -111,9 +111,9 @@ class Settings(BaseSettings):
     CUSTOM_BASE_URL: str = "http://localhost:8080/v1"
     CUSTOM_DEFAULT_MODEL: str = "custom-model"
 
-    # 默认 LLM 提供商
-    DEFAULT_LLM_PROVIDER: str = "openai"
-    DEFAULT_LLM_MODEL: str = "gpt-4o"
+    # 默认 LLM 提供商（代码层面默认改为 custom）
+    DEFAULT_LLM_PROVIDER: str = "custom"
+    DEFAULT_LLM_MODEL: str = "custom-model"
     LLM_REQUEST_TIMEOUT: int = 120
     LLM_MAX_RETRIES: int = 3
 

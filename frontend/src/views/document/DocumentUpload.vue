@@ -159,7 +159,9 @@ async function startUpload() {
   for (const file of fileList.value) {
     const progressItem = uploadList.value.find(u => u.uid === file.uid)
     try {
-      await documentApi.upload(file.raw, (p) => {
+      const form = new FormData()
+      form.append('file', file.raw, file.name)
+      await documentApi.upload(form, (p) => {
         if (progressItem) progressItem.percent = p
       })
       if (progressItem) {
