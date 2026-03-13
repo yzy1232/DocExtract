@@ -12,8 +12,9 @@ from app.core.exceptions import LLMException
 class OpenAICompatibleAdapter(BaseLLMAdapter):
     """OpenAI 兼容协议适配器"""
 
-    def __init__(self, api_key: str, base_url: str, provider: str = "openai"):
+    def __init__(self, api_key: str, base_url: str, provider: str = "openai", test_model: Optional[str] = None):
         self._provider = provider
+        self._test_model = test_model
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -109,6 +110,9 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
 
     def _get_test_model(self) -> str:
         """获取测试时使用的模型"""
+        if self._test_model:
+            return self._test_model
+
         test_models = {
             "openai": "gpt-4o-mini",
             "deepseek": "deepseek-chat",

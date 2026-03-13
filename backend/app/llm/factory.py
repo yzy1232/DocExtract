@@ -82,7 +82,12 @@ def get_default_llm_config(provider: Optional[str] = None, model: Optional[str] 
     )
 
 
-def create_adapter_from_db_config(api_key: str, base_url: str, provider: Optional[str] = None) -> BaseLLMAdapter:
+def create_adapter_from_db_config(
+    api_key: str,
+    base_url: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> BaseLLMAdapter:
     """
     使用数据库中存储的凭据直接创建适配器（跳过系统配置）。
     适用于自定义提供商或 DB 中单独配置了 base_url / api_key 的场景。
@@ -93,6 +98,7 @@ def create_adapter_from_db_config(api_key: str, base_url: str, provider: Optiona
         api_key=api_key or "custom",
         base_url=base_url,
         provider=prov,
+        test_model=model,
     )
 
 

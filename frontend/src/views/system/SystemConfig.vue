@@ -141,7 +141,11 @@ async function loadLLMConfigs() {
   llmLoading.value = true
   try {
     const res = await systemApi.listLLMConfigs()
-    llmConfigs.value = res.data
+    llmConfigs.value = (res.data || []).map((item) => ({
+      ...item,
+      // 兼容后端不同字段命名，确保编辑弹窗可回填 API Key
+      api_key: item.api_key ?? item.api_key_encrypted ?? '',
+    }))
   } catch {
     ElMessage.error('加载LLM配置失败')
   } finally {
@@ -152,8 +156,10 @@ async function loadLLMConfigs() {
 function openLLMDialog(row = null) {
   editingLLM.value = row
   if (row) {
-    Object.assign(llmForm, row)
-    llmForm.api_key = '' // 不回填Key
+    Object.assign(llmForm, {
+      ...row,
+      api_key: row.api_key ?? row.api_key_encrypted ?? '',
+    })
   } else {
     Object.assign(llmForm, {
       name: '', base_url: 'https://api.openai.com/v1',

@@ -2,6 +2,7 @@
 系统管理 API - LLM配置、系统监控
 """
 import uuid
+import logging
 from fastapi import APIRouter, Depends, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
@@ -17,6 +18,8 @@ from app.models.system import SystemConfig
 import uuid
 
 router = APIRouter(prefix="/system", tags=["系统管理"])
+
+logger = logging.getLogger("app.api.v1.system")
 
 
 @router.get("/health", response_model=ResponseBase[dict], summary="健康检查", include_in_schema=False)
@@ -71,11 +74,20 @@ async def list_llm_configs(
 ):
     result = await db.execute(select(LLMConfig).order_by(LLMConfig.priority.desc()))
     configs = result.scalars().all()
+    # 记录返回信息（不包含明文密钥，仅记录是否存在与长度）
+    for c in configs:
+        try:
+            ak_len = len(c.api_key_encrypted) if c.api_key_encrypted else 0
+        except Exception:
+            ak_len = 0
+        logger.info(f"list_llm_configs: id={c.id} name={c.name} api_key_exists={bool(c.api_key_encrypted)} api_key_len={ak_len} is_default={c.is_default} is_active={c.is_active}")
+
     return ResponseBase(data=[
         {
             "id": c.id, "name": c.name,
             "model_name": c.model_name, "base_url": c.base_url,
             "is_default": c.is_default, "is_active": c.is_active,
+            "api_key": c.api_key_encrypted,
             "last_test_success": c.last_test_success,
             "last_test_latency_ms": c.last_test_latency_ms,
         }
@@ -102,6 +114,11 @@ async def create_llm_config(
     )
     db.add(config)
     await db.flush()
+
+    try:
+        logger.info(f"create_llm_config: id={config.id} name={config.name} api_key_exists={bool(config.api_key_encrypted)} api_key_len={len(config.api_key_encrypted) if config.api_key_encrypted else 0}")
+    except Exception:
+        logger.info(f"create_llm_config: id={config.id} name={config.name}")
 
     # 如果新创建的配置设为默认，清除其它默认，并同步到 SystemConfig
     if config.is_default:
@@ -153,6 +170,11 @@ async def update_llm_config(
         config.api_key_encrypted = payload["api_key"]
     # provider 已移除，忽略 provider 字段
     await db.flush()
+
+    try:
+        logger.info(f"update_llm_config: id={config.id} name={config.name} api_key_provided_in_payload={bool(payload.get('api_key'))} api_key_exists={bool(config.api_key_encrypted)} api_key_len={len(config.api_key_encrypted) if config.api_key_encrypted else 0}")
+    except Exception:
+        logger.info(f"update_llm_config: id={config.id} name={config.name}")
 
     # 如果更新将该配置设为默认，同步其它记录和系统配置
     if payload.get('is_default'):
@@ -217,11 +239,14 @@ async def test_llm_config(
     try:
         # 优先使用 DB 中存储的凭据（以配置中 base_url/api_key 为准）
         if config.base_url and config.api_key_encrypted:
+            logger.debug(f"test_llm_config: using db stored credentials for id={config.id} base_url={config.base_url}")
             adapter = create_adapter_from_db_config(
                 config.api_key_encrypted,
                 config.base_url,
+                model=config.model_name,
             )
         else:
+            logger.debug(f"test_llm_config: falling back to default adapter for id={config.id}")
             # 回退到系统默认适配器
             adapter = get_default_adapter()
         success = await adapter.test_connection()
