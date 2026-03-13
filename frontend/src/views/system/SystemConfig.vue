@@ -61,15 +61,6 @@
           <el-form-item label="每分钟限速请求数">
             <el-input-number v-model="sysConfig.rate_limit_per_minute" :min="10" :max="10000" />
           </el-form-item>
-          <el-form-item label="默认LLM提供商">
-            <el-select v-model="sysConfig.default_llm_provider" style="width:200px">
-              <el-option label="OpenAI" value="openai" />
-              <el-option label="DeepSeek" value="deepseek" />
-              <el-option label="Ollama (本地)" value="ollama" />
-              <el-option label="文心一言" value="wenxin" />
-              <el-option label="自定义" value="custom" />
-            </el-select>
-          </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="saveSysConfig" :loading="sysConfigSaving">
               保存配置
