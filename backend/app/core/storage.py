@@ -4,6 +4,7 @@
 import io
 import hashlib
 from typing import Optional, BinaryIO
+from urllib.parse import quote
 from minio import Minio
 from minio.error import S3Error
 from app.config import settings
@@ -47,15 +48,38 @@ class StorageManager:
         metadata: Optional[dict] = None,
     ) -> str:
         """上传文件到对象存储，返回对象名称（storage_path）"""
+        # MinIO 用户元数据仅支持 US-ASCII；对非 ASCII 值做百分号编码。
+        safe_metadata = self._normalize_metadata(metadata)
         self._client.put_object(
             bucket_name=bucket,
             object_name=object_name,
             data=data,
             length=length,
             content_type=content_type,
-            metadata=metadata,
+            metadata=safe_metadata,
         )
         return object_name
+
+    @staticmethod
+    def _normalize_metadata(metadata: Optional[dict]) -> Optional[dict]:
+        if not metadata:
+            return metadata
+
+        def to_ascii(value) -> str:
+            text = str(value)
+            try:
+                text.encode("ascii")
+                return text
+            except UnicodeEncodeError:
+                return quote(text, safe="")
+
+        normalized = {}
+        for key, value in metadata.items():
+            if isinstance(value, (list, tuple, set)):
+                normalized[key] = [to_ascii(v) for v in value]
+            else:
+                normalized[key] = to_ascii(value)
+        return normalized
 
     def upload_bytes(
         self,

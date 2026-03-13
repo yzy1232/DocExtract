@@ -3,6 +3,7 @@
 """
 import uuid
 import os
+import logging
 from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
@@ -14,6 +15,9 @@ from app.core.exceptions import (
 )
 from app.processors.factory import get_processor, is_supported_type, get_document_format
 from app.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentService:
@@ -53,6 +57,7 @@ class DocumentService:
                 metadata={"original_filename": filename},
             )
         except Exception as e:
+            logger.exception("上传对象存储失败: filename=%s mime_type=%s owner_id=%s", filename, mime_type, owner_id)
             raise StorageException(f"文件上传到存储服务失败: {str(e)}")
 
         # 创建文档记录
@@ -73,12 +78,15 @@ class DocumentService:
         )
         self.db.add(document)
         await self.db.flush()
+        # 立即回填 server_default 字段，避免响应序列化时触发异步懒加载
+        await self.db.refresh(document)
 
         # 触发异步解析任务
         try:
             from app.tasks.document_tasks import parse_document_task
             parse_document_task.delay(doc_id)
         except Exception:
+            logger.warning("触发文档解析任务失败，已忽略: document_id=%s", doc_id, exc_info=True)
             # 任务队列不可用时不影响主流程
             pass
 
