@@ -67,18 +67,7 @@
       </el-col>
 
       <el-col :span="8">
-        <el-card header="上传配置" shadow="never">
-          <el-form label-width="90px">
-            <el-form-item label="解析方式">
-              <el-radio-group v-model="uploadConfig.parse_immediately">
-                <el-radio :value="true">立即解析</el-radio>
-                <el-radio :value="false">仅上传</el-radio>
-              </el-radio-group>
-            </el-form-item>
-          </el-form>
-
-          <el-divider />
-
+        <el-card header="上传文档" shadow="never">
           <div style="display:flex;flex-direction:column;gap:12px">
             <el-button
               type="primary"
