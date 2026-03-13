@@ -6,6 +6,7 @@ import json
 from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
+from sqlalchemy.orm import selectinload
 from app.models.template import Template, TemplateField, TemplateVersion, TemplateCategory, TemplateStatus
 from app.schemas.template import TemplateCreate, TemplateUpdate, TemplateCategoryCreate
 from app.core.exceptions import NotFoundException, ForbiddenException, ConflictException
@@ -133,13 +134,22 @@ class TemplateService:
         return field
 
     async def _save_version(self, template: Template, description: str, creator_id: str):
-        """保存当前版本快照"""
+        """保存当前版本快照
+
+        为避免在非异步上下文触发 SQLAlchemy 的懒加载（从而导致 MissingGreenlet 错误），
+        在这里显式在异步会话中重新查询并使用 `selectinload` 预加载 `fields` 关系。
+        """
+        # 在异步上下文中显式加载 fields，避免懒加载在后续同步上下文触发
+        result = await self.db.execute(
+            select(Template).options(selectinload(Template.fields)).where(Template.id == template.id)
+        )
+        tpl = result.scalar_one()
         snapshot = {
-            "name": template.name,
-            "description": template.description,
-            "system_prompt": template.system_prompt,
-            "extraction_prompt_template": template.extraction_prompt_template,
-            "few_shot_examples": template.few_shot_examples,
+            "name": tpl.name,
+            "description": tpl.description,
+            "system_prompt": tpl.system_prompt,
+            "extraction_prompt_template": tpl.extraction_prompt_template,
+            "few_shot_examples": tpl.few_shot_examples,
             "fields": [
                 {
                     "name": f.name,
@@ -150,7 +160,7 @@ class TemplateService:
                     "validation_rules": f.validation_rules,
                     "extraction_hints": f.extraction_hints,
                 }
-                for f in template.fields
+                for f in tpl.fields
             ],
         }
         version = TemplateVersion(

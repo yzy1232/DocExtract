@@ -139,7 +139,7 @@ class TextProcessor(BaseDocumentProcessor):
 
     @property
     def supported_mime_types(self) -> List[str]:
-        return ["text/plain"]
+        return ["text/plain", "text/markdown", "text/x-markdown"]
 
     async def parse(self, file_content: bytes, filename: str) -> DocumentParseResult:
         # 自动检测编码

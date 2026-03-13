@@ -30,8 +30,10 @@ async def upload_document(
     # 安全检查：防止路径穿越
     import os
     safe_filename = os.path.basename(file.filename)
-
+    # 修正某些浏览器/客户端对 Markdown 文件发送 application/octet-stream 的情况
     mime_type = file.content_type or "application/octet-stream"
+    if mime_type == "application/octet-stream" and safe_filename.lower().endswith('.md'):
+        mime_type = "text/markdown"
     file_content = await file.read()
 
     tag_list = [t.strip() for t in tags.split(",")] if tags else []

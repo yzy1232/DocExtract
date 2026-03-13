@@ -16,13 +16,14 @@
         <el-col :span="16">
           <el-card header="基本配置" shadow="never">
             <!-- 文档选择 -->
-            <el-form-item label="选择文档" prop="document_id">
+            <el-form-item label="选择文档" prop="document_ids">
               <el-select
-                v-model="form.document_id"
+                v-model="form.document_ids"
                 placeholder="请选择要提取的文档"
                 style="width:100%"
                 filterable
                 remote
+                multiple
                 :remote-method="searchDocuments"
                 :loading="documentsLoading"
               >
@@ -75,12 +76,13 @@
 
             <!-- LLM配置 -->
             <el-form-item label="LLM模型">
-              <el-select v-model="form.llm_config.model" style="width:260px">
-                <el-option label="GPT-4o" value="gpt-4o" />
-                <el-option label="GPT-4o-mini" value="gpt-4o-mini" />
-                <el-option label="DeepSeek Chat" value="deepseek-chat" />
-                <el-option label="Llama 3 (Ollama)" value="llama3" />
-                <el-option label="自定义模型" value="custom" />
+              <el-select v-model="form.llm_config_id" placeholder="从系统LLM配置中选择" style="width:360px" filterable>
+                <el-option
+                  v-for="cfg in llmOptions"
+                  :key="cfg.id"
+                  :label="`${cfg.name} (${cfg.model_name})`"
+                  :value="cfg.id"
+                />
               </el-select>
             </el-form-item>
 
@@ -147,7 +149,7 @@ import { ref, reactive, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Check } from '@element-plus/icons-vue'
-import { documentApi, templateApi, extractionApi } from '@/api/index'
+import { documentApi, templateApi, extractionApi, systemApi } from '@/api/index'
 
 const router = useRouter()
 const route = useRoute()
@@ -157,6 +159,7 @@ const documentsLoading = ref(false)
 const documentOptions = ref([])
 const templateOptions = ref([])
 const selectedTemplate = ref(null)
+const llmOptions = ref([])
 
 const statusLabelMap = {
   pending: '待解析', processing: '处理中', parsing: '解析中',
@@ -168,15 +171,17 @@ function docLabel(doc) {
 }
 
 const form = reactive({
-  document_id: null,
+  document_ids: [],
   template_id: null,
   priority: 'normal',
   remark: '',
+  // store selected llm config id and a snapshot object
+  llm_config_id: null,
   llm_config: { model: 'gpt-4o', temperature: 0.1, max_tokens: 4096 },
 })
 
 const rules = {
-  document_id: [{ required: true, message: '请选择文档', trigger: 'change' }],
+  document_ids: [{ required: true, message: '请选择文档', trigger: 'change' }],
   template_id: [{ required: true, message: '请选择模板', trigger: 'change' }],
 }
 
@@ -204,9 +209,37 @@ async function submit() {
   await formRef.value.validate()
   submitting.value = true
   try {
-    const res = await extractionApi.create(form)
-    ElMessage.success('提取任务已提交')
-    router.push(`/extractions/${res.data.id}/result`)
+    // map form to backend ExtractionCreate schema
+    const selectedCfg = llmOptions.value.find((c) => c.id === form.llm_config_id)
+    // 支持多选：若选择多个文档则调用批量接口
+    if (form.document_ids && form.document_ids.length > 1) {
+      const batchPayload = {
+        document_ids: form.document_ids,
+        template_id: form.template_id,
+        priority: form.priority,
+        llm_provider: null,
+        llm_model: selectedCfg ? selectedCfg.model_name : form.llm_config.model,
+      }
+      const res = await extractionApi.batchCreate(batchPayload)
+      ElMessage.success('批量提取任务已提交')
+      if (res.data && res.data.length > 0) {
+        router.push(`/extractions/${res.data[0].id}/result`)
+      } else {
+        router.push('/extractions')
+      }
+    } else {
+      const payload = {
+        document_id: form.document_ids && form.document_ids.length === 1 ? form.document_ids[0] : form.document_id,
+        template_id: form.template_id,
+        priority: form.priority,
+        llm_provider: null,
+        llm_model: selectedCfg ? selectedCfg.model_name : form.llm_config.model,
+        extra_config: selectedCfg ? selectedCfg : form.llm_config,
+      }
+      const res = await extractionApi.create(payload)
+      ElMessage.success('提取任务已提交')
+      router.push(`/extractions/${res.data.id}/result`)
+    }
   } catch {
     ElMessage.error('提交失败，请重试')
   } finally {
@@ -221,13 +254,32 @@ onMounted(async () => {
     templateOptions.value = res.data.items
   } catch { /* ignore */ }
 
-  // 预填 query 参数
+  // 加载系统 LLM 配置用于下拉
+  try {
+    const res = await systemApi.listLLMConfigs()
+    // 仅展示已启用的配置，并按后端顺序展示
+    llmOptions.value = (res.data || []).filter((c) => c.is_active)
+    // 预选默认配置（若存在）否则选第一个
+    const defaultCfg = llmOptions.value.find((c) => c.is_default) || llmOptions.value[0]
+    if (defaultCfg) {
+      form.llm_config_id = defaultCfg.id
+      form.llm_config = {
+        model: defaultCfg.model_name,
+        base_url: defaultCfg.base_url,
+        name: defaultCfg.name,
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 预填 query 参数（支持单个 document_id）
   if (route.query.document_id) {
-    form.document_id = Number(route.query.document_id)
+    form.document_ids = [route.query.document_id]
     await searchDocuments('')
   }
   if (route.query.template_id) {
-    form.template_id = Number(route.query.template_id)
+    form.template_id = route.query.template_id
     await handleTemplateChange(form.template_id)
   }
 })

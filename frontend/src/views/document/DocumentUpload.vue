@@ -31,7 +31,7 @@
             </div>
             <template #tip>
               <div class="upload-tip">
-                支持格式：PDF、Word(.docx)、Excel(.xlsx)、文本(.txt)，单文件不超过 100MB
+                支持格式：PDF、Word(.docx)、Excel(.xlsx)、文本(.txt)、Markdown(.md)，单文件不超过 100MB
               </div>
             </template>
           </el-upload>
@@ -114,7 +114,7 @@ const uploadConfig = reactive({
   parse_immediately: true,
 })
 
-const acceptTypes = '.pdf,.docx,.xlsx,.txt,.jpg,.jpeg,.png'
+const acceptTypes = '.pdf,.docx,.xlsx,.txt,.md,.jpg,.jpeg,.png'
 
 function beforeUpload(file) {
   const maxSize = 100 * 1024 * 1024

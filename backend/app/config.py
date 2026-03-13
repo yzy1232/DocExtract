@@ -146,6 +146,8 @@ class Settings(BaseSettings):
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "text/plain",
+        "text/markdown",
+        "text/x-markdown",
         "image/jpeg",
         "image/png",
         "image/tiff",

@@ -45,6 +45,8 @@ def get_document_format(mime_type: str) -> str:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
         "text/plain": "txt",
+        "text/markdown": "txt",
+        "text/x-markdown": "txt",
         "image/jpeg": "image",
         "image/png": "image",
         "image/tiff": "image",
