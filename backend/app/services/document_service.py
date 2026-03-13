@@ -78,7 +78,8 @@ class DocumentService:
             file_hash=file_hash,
             storage_path=storage_key,
             storage_bucket=settings.STORAGE_BUCKET_DOCUMENTS,
-            status=DocumentStatus.UPLOADED,
+            # 文本类文件（如 docx/txt/xlsx/pptx/markdown）直接标记为已处理，避免等待 OCR
+            status=(DocumentStatus.PROCESSED if doc_format in ("docx", "txt", "xlsx", "pptx", "md", "markdown") else DocumentStatus.UPLOADED),
             tags=merged_tags,
             upload_ip=upload_ip,
         )
@@ -87,13 +88,12 @@ class DocumentService:
         # 立即回填 server_default 字段，避免响应序列化时触发异步懒加载
         await self.db.refresh(document)
 
-        # 触发异步解析任务
+        # 触发异步解析任务（对于已标记为 PROCESSED 的文本文件，后台仍会解析并回写，但上传接口不需等待）
         try:
             from app.tasks.document_tasks import parse_document_task
             parse_document_task.delay(doc_id)
         except Exception:
             logger.warning("触发文档解析任务失败，已忽略: document_id=%s", doc_id, exc_info=True)
-            # 任务队列不可用时不影响主流程
             pass
 
         return document
@@ -108,7 +108,9 @@ class DocumentService:
         if not document:
             raise NotFoundException("文档", document_id)
 
-        document.status = DocumentStatus.PROCESSING
+        # 仅当文档尚未处于 PROCESSED 时，才将状态改为 PROCESSING，避免覆盖上传时已标记的已处理状态
+        if document.status != DocumentStatus.PROCESSED:
+            document.status = DocumentStatus.PROCESSING
         await self.db.flush()
 
         try:

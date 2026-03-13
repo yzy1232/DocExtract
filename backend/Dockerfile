@@ -14,9 +14,7 @@ WORKDIR /app
 
 # 依赖安装（分层缓存，使用国内镜像加速）
 COPY requirements.txt .
-RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    --trusted-host pypi.tuna.tsinghua.edu.cn \
-    -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制应用代码
 COPY . .

@@ -4,7 +4,14 @@ PDF 文档处理器 - 使用 PyMuPDF (fitz) 解析 PDF
 import io
 from typing import List
 import fitz  # PyMuPDF
+from PIL import Image
 from app.processors.base_processor import BaseDocumentProcessor, DocumentParseResult, PageContent
+from app.config import settings
+
+try:
+    import pytesseract
+except Exception:
+    pytesseract = None
 
 
 class PDFProcessor(BaseDocumentProcessor):
@@ -77,13 +84,31 @@ class PDFProcessor(BaseDocumentProcessor):
         for img_info in img_list:
             images.append({"xref": img_info[0], "alt_text": ""})
 
+        text_result = self._clean_text(raw_text)
+
+        # 如果页面被判断为扫描页，尝试基于配置的 OCR 引擎进行 OCR（默认为 tesseract）
+        if is_scanned and pytesseract and settings.OCR_ENGINE == "tesseract":
+            try:
+                pix = page.get_pixmap()
+                img_bytes = pix.tobytes("png")
+                img = Image.open(io.BytesIO(img_bytes))
+                lang = "+".join(settings.OCR_LANGUAGES) if settings.OCR_LANGUAGES else None
+                ocr_text = pytesseract.image_to_string(img, lang=lang) if lang else pytesseract.image_to_string(img)
+                text_result = self._clean_text(ocr_text)
+                confidence = None
+                is_scanned = False if text_result else True
+            except Exception:
+                confidence = None
+        else:
+            confidence = 1.0 if not is_scanned else None
+
         return PageContent(
             page_number=page_number,
-            raw_text=self._clean_text(raw_text),
+            raw_text=text_result,
             tables=tables,
             images=images,
             has_table=len(tables) > 0,
             has_image=len(images) > 0,
             is_scanned=is_scanned,
-            confidence=1.0 if not is_scanned else None,
+            confidence=confidence,
         )
