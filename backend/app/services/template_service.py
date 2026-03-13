@@ -59,8 +59,9 @@ class TemplateService:
         return template
 
     async def get_by_id(self, template_id: str) -> Template:
+        # 显式预加载 fields，避免在序列化到 Pydantic 时触发延迟加载失败或字段为空
         result = await self.db.execute(
-            select(Template).where(Template.id == template_id)
+            select(Template).options(selectinload(Template.fields)).where(Template.id == template_id)
         )
         template = result.scalar_one_or_none()
         if not template:

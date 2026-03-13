@@ -51,8 +51,12 @@ async def get_stats(
     from app.models.extraction import ExtractionTask, TaskStatus
     from sqlalchemy import func
 
-    doc_count = await db.execute(select(func.count(Document.id)))
-    tmpl_count = await db.execute(select(func.count(Template.id)))
+    # 统计时排除已删除/归档的数据以符合前端显示语义（活跃模板、未删除文档）
+    from app.models.document import DocumentStatus
+    from app.models.template import TemplateStatus
+
+    doc_count = await db.execute(select(func.count(Document.id)).where(Document.status != DocumentStatus.DELETED))
+    tmpl_count = await db.execute(select(func.count(Template.id)).where(Template.status != TemplateStatus.ARCHIVED))
     task_count = await db.execute(select(func.count(ExtractionTask.id)))
     pending_tasks = await db.execute(
         select(func.count(ExtractionTask.id)).where(
