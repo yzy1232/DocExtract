@@ -50,7 +50,7 @@
         <el-table-column prop="description" label="描述" min-width="200" show-overflow-tooltip />
         <el-table-column label="字段数" width="90" align="center">
           <template #default="{ row }">
-            <el-tag size="small" type="info" round>{{ row.fields?.length ?? 0 }}</el-tag>
+            <el-tag size="small" type="info" round>{{ row.field_count ?? 0 }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="版本" width="80" align="center">
