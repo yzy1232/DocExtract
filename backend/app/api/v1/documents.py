@@ -35,7 +35,7 @@ async def upload_document(
     # 安全检查：防止路径穿越
     import os
     safe_filename = os.path.basename(file.filename)
-    mime_type = normalize_mime_type(file.content_type, safe_filename)
+    mime_type = normalize_mime_type(file.content_type, safe_filename, default_text=False)
     file_content = await file.read()
 
     tag_list = [t.strip() for t in tags.split(",")] if tags else []
@@ -66,7 +66,7 @@ async def batch_upload(
         import os
         safe_filename = os.path.basename(f.filename or "unknown")
         content = await f.read()
-        mime_type = normalize_mime_type(f.content_type, safe_filename)
+        mime_type = normalize_mime_type(f.content_type, safe_filename, default_text=False)
         doc = await svc.upload(
             file_content=content,
             filename=safe_filename,

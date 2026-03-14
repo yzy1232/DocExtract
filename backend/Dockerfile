@@ -4,6 +4,9 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y \
     libmupdf-dev \
     mupdf-tools \
+    tesseract-ocr \
+    tesseract-ocr-chi-sim \
+    tesseract-ocr-eng \
     gcc \
     g++ \
     curl \

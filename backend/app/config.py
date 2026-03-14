@@ -147,16 +147,9 @@ class Settings(BaseSettings):
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "text/plain",
         "text/markdown",
         "text/x-markdown",
-        "image/jpeg",
-        "image/png",
-        "image/tiff",
-        "image/bmp",
-        "image/gif",
-        "image/webp",
     ]
 
     # ========================

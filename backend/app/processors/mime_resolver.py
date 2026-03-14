@@ -12,9 +12,17 @@ EXTENSION_TO_MIME: dict[str, str] = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".txt": "text/plain",
     ".md": "text/markdown",
     ".markdown": "text/markdown",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".tiff": "image/tiff",
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
 }
 
 

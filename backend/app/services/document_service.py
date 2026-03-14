@@ -35,12 +35,15 @@ class DocumentService:
         upload_ip: Optional[str] = None,
     ) -> Document:
         """上传并异步触发解析流程"""
-        normalized_mime_type = normalize_mime_type(mime_type, filename)
+        # 上传阶段禁止将未知二进制类型默认降级为 text/plain，避免绕过类型校验
+        normalized_mime_type = normalize_mime_type(mime_type, filename, default_text=False)
 
         # 安全校验
         if len(file_content) > settings.MAX_UPLOAD_SIZE:
             raise FileTooLargeException(settings.MAX_UPLOAD_SIZE // (1024 * 1024))
         if normalized_mime_type not in settings.ALLOWED_MIME_TYPES:
+            raise UnsupportedFileTypeException(normalized_mime_type)
+        if not get_processor(normalized_mime_type):
             raise UnsupportedFileTypeException(normalized_mime_type)
 
         file_hash = storage.calculate_sha256(file_content)
@@ -78,8 +81,8 @@ class DocumentService:
             file_hash=file_hash,
             storage_path=storage_key,
             storage_bucket=settings.STORAGE_BUCKET_DOCUMENTS,
-            # 文本类文件（如 docx/txt/xlsx/pptx/markdown）直接标记为已处理，避免等待 OCR
-            status=(DocumentStatus.PROCESSED if doc_format in ("docx", "txt", "xlsx", "pptx", "md", "markdown") else DocumentStatus.UPLOADED),
+            # 可直接读取文本内容的文件（docx/txt/xlsx）直接标记为已处理
+            status=(DocumentStatus.PROCESSED if doc_format in ("docx", "txt", "xlsx") else DocumentStatus.UPLOADED),
             tags=merged_tags,
             upload_ip=upload_ip,
         )
@@ -134,6 +137,8 @@ class DocumentService:
             # 解析器内部可能吞掉异常并写入 errors，这里统一按失败处理
             if parse_result.errors:
                 raise ValueError("; ".join(parse_result.errors))
+            if not (parse_result.full_text or "").strip():
+                raise ValueError("解析结果为空文本，无法标记为已处理")
 
             # 保存解析结果
             document.page_count = parse_result.page_count
