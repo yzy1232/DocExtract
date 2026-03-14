@@ -35,10 +35,10 @@
     </el-card>
 
     <el-card shadow="never">
-      <el-table :data="tasks" v-loading="loading" stripe row-key="id">
+      <el-table :data="tasks" v-loading="loading" stripe row-key="id" table-layout="fixed">
         <el-table-column prop="id" label="任务ID" width="90">
           <template #default="{ row }">
-            <el-text class="mono" size="small">#{{ row.id }}</el-text>
+            <el-text class="mono" size="small">#{{ shortId(row.id) }}</el-text>
           </template>
         </el-table-column>
         <el-table-column label="文档" min-width="180" show-overflow-tooltip>
@@ -87,7 +87,7 @@
               查看结果
             </el-button>
             <el-button
-              v-else-if="['pending', 'running'].includes(row.status)"
+              v-else-if="['pending', 'queued', 'running', 'processing'].includes(row.status)"
               size="small"
               text
               type="warning"
@@ -103,6 +103,9 @@
             >
               查看错误
             </el-button>
+            <el-text v-if="!['completed', 'pending', 'queued', 'running', 'processing', 'failed'].includes(row.status)" type="info" size="small">
+              -
+            </el-text>
           </template>
         </el-table-column>
       </el-table>
@@ -151,6 +154,11 @@ const priorityLabelMap = { low: '低', normal: '普通', high: '高', urgent: '�
 function formatDate(str) {
   if (!str) return '-'
   return new Date(str).toLocaleString('zh-CN')
+}
+
+function shortId(id) {
+  if (!id) return '-'
+  return String(id).slice(0, 8)
 }
 
 async function loadTasks() {
