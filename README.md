@@ -62,7 +62,7 @@ docker compose logs -f  # 查看日志
 
 | 服务 | 地址 |
 |------|------|
-| 前端应用 | http://localhost |
+| 前端应用 | http://localhost:8080 |
 | API 文档 (Swagger) | http://localhost/docs |
 | Celery Flower 监控 | http://localhost:5555 |
 | MinIO 控制台 | http://localhost:9001 |
