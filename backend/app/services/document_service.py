@@ -131,6 +131,10 @@ class DocumentService:
             # 解析文档
             parse_result = await processor.parse(file_content, document.name)
 
+            # 解析器内部可能吞掉异常并写入 errors，这里统一按失败处理
+            if parse_result.errors:
+                raise ValueError("; ".join(parse_result.errors))
+
             # 保存解析结果
             document.page_count = parse_result.page_count
             document.language = parse_result.language

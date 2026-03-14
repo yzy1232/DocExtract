@@ -31,8 +31,14 @@ def parse_document_task(self, document_id: str):
     async def _run():
         async with AsyncSessionLocal() as db:
             svc = DocumentService(db)
-            await svc.parse_document(document_id)
+            try:
+                await svc.parse_document(document_id)
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
 
+    loop = None
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -40,4 +46,5 @@ def parse_document_task(self, document_id: str):
     except Exception as exc:
         raise self.retry(exc=exc, countdown=2 ** self.request.retries * 30)
     finally:
-        loop.close()
+        if loop:
+            loop.close()
