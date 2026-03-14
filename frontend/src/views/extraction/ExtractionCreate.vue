@@ -35,10 +35,7 @@
                 >
                   <div style="display:flex;justify-content:space-between;align-items:center">
                     <span>{{ docLabel(doc) }}</span>
-                    <el-tag
-                      :type="doc.status === 'completed' ? 'success' : 'warning'"
-                      size="small"
-                    >
+                    <el-tag :type="statusTagType(doc.status)" size="small">
                       {{ statusLabelMap[doc.status] || doc.status }}
                     </el-tag>
                   </div>
@@ -162,8 +159,27 @@ const selectedTemplate = ref(null)
 const llmOptions = ref([])
 
 const statusLabelMap = {
-  pending: '待解析', processing: '处理中', parsing: '解析中',
-  completed: '已完成', failed: '失败', deleted: '已删除',
+  uploading: '上传中', uploaded: '已上传', processing: '处理中', processed: '已处理',
+  pending: '待解析', parsing: '解析中', completed: '已完成', failed: '失败', deleted: '已删除',
+}
+
+function statusTagType(status) {
+  switch (status) {
+    case 'uploading':
+    case 'uploaded':
+      return 'info'
+    case 'processing':
+    case 'parsing':
+      return 'warning'
+    case 'processed':
+    case 'completed':
+      return 'success'
+    case 'failed':
+    case 'deleted':
+      return 'danger'
+    default:
+      return 'info'
+  }
 }
 
 function docLabel(doc) {
