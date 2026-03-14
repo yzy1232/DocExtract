@@ -79,6 +79,9 @@ class ExtractionService:
         # 更新模板使用计数
         template.use_count += 1
         await self.db.flush()
+
+        # 避免 API 序列化阶段触发异步懒加载（MissingGreenlet）
+        await self.db.refresh(task, attribute_names=["created_at", "updated_at", "results", "field_results"])
         return task
 
     async def create_batch_tasks(self, data: BatchExtractionCreate, creator_id: str) -> List[ExtractionTask]:
@@ -288,7 +291,12 @@ class ExtractionService:
 
     async def get_task_by_id(self, task_id: str) -> ExtractionTask:
         result = await self.db.execute(
-            select(ExtractionTask).where(ExtractionTask.id == task_id)
+            select(ExtractionTask)
+            .options(
+                selectinload(ExtractionTask.results),
+                selectinload(ExtractionTask.field_results),
+            )
+            .where(ExtractionTask.id == task_id)
         )
         task = result.scalar_one_or_none()
         if not task:

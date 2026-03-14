@@ -134,7 +134,7 @@ class ExtractionTaskOut(BaseModel):
     progress: float
     progress_message: Optional[str] = None
     results: Optional[ExtractionResultOut] = None
-    field_results: List[ExtractionFieldOut] = []
+    field_results: List[ExtractionFieldOut] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
