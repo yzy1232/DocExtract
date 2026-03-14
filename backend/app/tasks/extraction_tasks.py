@@ -5,6 +5,16 @@ import asyncio
 from app.tasks.celery_app import celery_app
 
 
+_worker_loop = None
+
+
+def _get_worker_loop():
+    global _worker_loop
+    if _worker_loop is None or _worker_loop.is_closed():
+        _worker_loop = asyncio.new_event_loop()
+    return _worker_loop
+
+
 @celery_app.task(
     name="extraction.run",
     bind=True,
@@ -30,13 +40,9 @@ def run_extraction_task(self, task_id: str):
                 await db.rollback()
                 raise
 
-    loop = None
     try:
-        loop = asyncio.new_event_loop()
+        loop = _get_worker_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(_run())
     except Exception as exc:
         raise self.retry(exc=exc, countdown=2 ** self.request.retries * 60)
-    finally:
-        if loop:
-            loop.close()

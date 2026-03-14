@@ -6,6 +6,16 @@ from celery import Task
 from app.tasks.celery_app import celery_app
 
 
+_worker_loop = None
+
+
+def _get_worker_loop():
+    global _worker_loop
+    if _worker_loop is None or _worker_loop.is_closed():
+        _worker_loop = asyncio.new_event_loop()
+    return _worker_loop
+
+
 class AsyncTask(Task):
     """支持 async 的 Celery 任务基类"""
     def run_async(self, coro):
@@ -24,7 +34,6 @@ def parse_document_task(self, document_id: str):
     异步解析文档任务
     由文档上传接口触发，提取文档文本和结构化内容
     """
-    import asyncio
     from app.database import AsyncSessionLocal
     from app.services.document_service import DocumentService
 
@@ -38,13 +47,9 @@ def parse_document_task(self, document_id: str):
                 await db.rollback()
                 raise
 
-    loop = None
     try:
-        loop = asyncio.new_event_loop()
+        loop = _get_worker_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(_run())
     except Exception as exc:
         raise self.retry(exc=exc, countdown=2 ** self.request.retries * 30)
-    finally:
-        if loop:
-            loop.close()

@@ -119,6 +119,8 @@ class Settings(BaseSettings):
     DEFAULT_LLM_MODEL: str = "custom-model"
     LLM_REQUEST_TIMEOUT: int = 120
     LLM_MAX_RETRIES: int = 3
+    EXTRACTION_CHUNK_SIZE: int = 7000
+    EXTRACTION_CHUNK_OVERLAP: int = 800
 
     # ========================
     # Celery 任务队列配置

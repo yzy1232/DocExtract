@@ -16,6 +16,7 @@ SYSTEM_PROMPT = """你是一个专业的文档信息提取助手。
 3. 对于日期、金额等格式化字段，进行标准化处理
 4. 输出必须是合法的 JSON 格式
 5. 对每个字段给出置信度评分（0-1之间）
+6. 当文档存在多条记录时，必须输出 records 数组，每条记录是一个对象
 """
 
 # 提取任务提示词模板
@@ -27,25 +28,34 @@ EXTRACTION_PROMPT_TEMPLATE = """请从以下文档内容中提取所需字段信
 ## 需要提取的字段
 {fields_description}
 
-## 输出格式
-请严格按照以下 JSON 格式输出，不要包含任何额外说明：
+优先识别“多条记录”场景（例如多行商品、多条费用、多次交易）。
+如果存在多条记录，请将每条记录放入 records 数组；
+如果仅有单条记录，records 也必须是长度为 1 的数组。
+"""
+
+OUTPUT_CONTRACT_TEMPLATE = """
+## 最终输出契约（必须严格遵守）
+仅输出 JSON，不要输出解释文字。
+
 ```json
 {{
-  "fields": {{
-    {field_json_template}
-  }},
-  "extraction_notes": "提取过程的备注说明（如有特殊情况）"
+    "fields": {{
+        {field_json_template}
+    }},
+    "records": [
+        {{
+            {records_json_template}
+        }}
+    ],
+    "extraction_notes": "提取过程备注"
 }}
 ```
 
-其中每个字段的格式为：
-```json
-"字段名": {{
-  "value": "提取到的值（未找到则为null）",
-  "confidence": 0.95,
-  "source_text": "来源原文片段"
-}}
-```
+约束：
+1. `fields`：字段级汇总，每个字段含 `value`、`confidence`、`source_text`。
+2. `records`：逐行记录数组。每条记录都应包含所有字段键，缺失值用 null。
+3. 若只有一条记录，`records` 仍返回数组（长度为 1）。
+4. 禁止使用字段定义之外的新键。
 """
 
 FEW_SHOT_EXAMPLE_TEMPLATE = """
@@ -98,13 +108,22 @@ class PromptEngine:
 
         fields_desc = self._build_fields_description(template_fields)
         field_json_template = self._build_field_json_template(template_fields)
+        records_json_template = self._build_records_json_template(template_fields)
 
         prompt_template = extraction_prompt_template or EXTRACTION_PROMPT_TEMPLATE
-        user_prompt = prompt_template.format(
+        prompt_body = prompt_template.format(
             document_content=document_content,
             fields_description=fields_desc,
             field_json_template=field_json_template,
+            records_json_template=records_json_template,
         )
+
+        output_contract = OUTPUT_CONTRACT_TEMPLATE.format(
+            field_json_template=field_json_template,
+            records_json_template=records_json_template,
+        )
+
+        user_prompt = f"{prompt_body.strip()}\n\n{output_contract.strip()}"
 
         messages.append(LLMMessage(role="user", content=user_prompt))
         return messages
@@ -135,6 +154,13 @@ class PromptEngine:
             entries.append(
                 f'    "{f["name"]}": {{"value": null, "confidence": 0.0, "source_text": ""}}'
             )
+        return ",\n".join(entries)
+
+    def _build_records_json_template(self, fields: List[Dict[str, Any]]) -> str:
+        """生成 records 数组中单条记录的 JSON 示例"""
+        entries = []
+        for f in fields:
+            entries.append(f'      "{f["name"]}": null')
         return ",\n".join(entries)
 
     def parse_llm_response(self, response_text: str) -> Dict[str, Any]:

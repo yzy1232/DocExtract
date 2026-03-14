@@ -60,77 +60,26 @@
           <template #header>
             <div style="display:flex;align-items:center;gap:12px">
               <span>提取结果</span>
-              <el-tag size="small" type="info">{{ fieldResults.length }} 个字段</el-tag>
+              <el-tag size="small" type="info">{{ matrixColumns.length }} 个字段</el-tag>
+              <el-tag size="small" type="success">{{ matrixRows.length }} 条记录</el-tag>
             </div>
           </template>
 
-          <el-table :data="fieldResults" stripe size="small">
-            <el-table-column prop="field_name" label="字段" min-width="140">
+          <el-table v-if="matrixColumns.length > 0" :data="matrixRows" stripe size="small">
+            <el-table-column type="index" label="#" width="56" />
+            <el-table-column
+              v-for="col in matrixColumns"
+              :key="col.prop"
+              :label="col.label"
+              min-width="160"
+            >
               <template #default="{ row }">
-                <div style="display:flex;flex-direction:column">
-                  <span style="font-size:13px;font-weight:500">{{ row.field_label ?? row.field_name }}</span>
-                  <span class="mono" style="font-size:11px;color:#94a3b8">{{ row.field_name }}</span>
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column label="提取值" min-width="200">
-              <template #default="{ row }">
-                <div class="value-cell">
-                  <span v-if="!editingField || editingField !== row.field_name">
-                    {{ formatValue(row.value) }}
-                  </span>
-                  <el-input
-                    v-else
-                    v-model="editValues[row.field_name]"
-                    size="small"
-                    @keyup.enter="saveEdit(row)"
-                  />
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column label="置信度" width="130">
-              <template #default="{ row }">
-                <el-progress
-                  v-if="row.confidence != null"
-                  :percentage="Math.round(row.confidence * 100)"
-                  :stroke-width="8"
-                  :color="confidenceColor(row.confidence)"
-                  :show-text="true"
-                  :format="(p) => p + '%'"
-                />
-                <span v-else>-</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="验证" width="70" align="center">
-              <template #default="{ row }">
-                <el-icon v-if="row.is_valid === true" color="#22c55e"><Check /></el-icon>
-                <el-icon v-else-if="row.is_valid === false" color="#ef4444"><Close /></el-icon>
-                <span v-else>-</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="80" align="center">
-              <template #default="{ row }">
-                <el-button
-                  v-if="editingField !== row.field_name"
-                  size="small"
-                  text
-                  type="primary"
-                  @click="startEdit(row)"
-                >
-                  编辑
-                </el-button>
-                <el-button
-                  v-else
-                  size="small"
-                  text
-                  type="success"
-                  @click="saveEdit(row)"
-                >
-                  保存
-                </el-button>
+                <div class="value-cell">{{ formatValue(row[col.prop]) }}</div>
               </template>
             </el-table-column>
           </el-table>
+
+          <el-empty v-else description="暂无可展示的结构化字段" />
         </el-card>
       </el-col>
     </el-row>
@@ -141,7 +90,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, Download, Check, Close } from '@element-plus/icons-vue'
+import { ArrowLeft, Download } from '@element-plus/icons-vue'
 import { extractionApi } from '@/api/index'
 
 const router = useRouter()
@@ -149,9 +98,36 @@ const route = useRoute()
 const loading = ref(false)
 const task = ref({})
 const fieldResults = ref([])
-const editingField = ref(null)
-const editValues = ref({})
 let pollTimer = null
+
+const matrixColumns = computed(() => {
+  if (!Array.isArray(fieldResults.value)) return []
+  return fieldResults.value.map((item) => ({
+    prop: item.field_name,
+    label: item.field_label ?? item.field_name,
+  }))
+})
+
+const matrixRows = computed(() => {
+  if (!Array.isArray(fieldResults.value) || fieldResults.value.length === 0) return []
+
+  const normalized = fieldResults.value.map((item) => {
+    const values = Array.isArray(item.value) ? item.value : [item.value]
+    return {
+      key: item.field_name,
+      values,
+    }
+  })
+
+  const rowCount = Math.max(1, ...normalized.map((x) => x.values.length))
+  return Array.from({ length: rowCount }, (_, rowIndex) => {
+    const row = {}
+    normalized.forEach((item) => {
+      row[item.key] = rowIndex < item.values.length ? item.values[rowIndex] : null
+    })
+    return row
+  })
+})
 
 const statusTypeMap = {
   pending: 'info', queued: 'info', running: 'warning', processing: 'warning',
@@ -173,19 +149,37 @@ function formatValue(val) {
   return String(val)
 }
 
-function confidenceColor(conf) {
-  if (conf >= 0.9) return '#22c55e'
-  if (conf >= 0.7) return '#f59e0b'
-  return '#ef4444'
-}
-
 async function loadTask() {
   try {
     const res = await extractionApi.get(route.params.id)
-    task.value = res.data
+    task.value = res.data || {}
+
+    const taskFieldResults = Array.isArray(task.value.field_results)
+      ? task.value.field_results.map((item) => ({
+          field_name: item.field_name,
+          field_label: item.field_name,
+          value: item.normalized_value ?? item.raw_value,
+          confidence: item.confidence,
+          is_valid: item.is_valid,
+        }))
+      : []
+
     if (task.value.status === 'completed') {
       const rRes = await extractionApi.getResults(route.params.id)
-      fieldResults.value = rRes.data
+      const resultData = rRes.data || {}
+      const structuredRows = resultData.structured_result && typeof resultData.structured_result === 'object'
+        ? Object.entries(resultData.structured_result).map(([key, value]) => ({
+            field_name: key,
+            field_label: key,
+            value,
+            confidence: null,
+            is_valid: null,
+          }))
+        : []
+
+      fieldResults.value = structuredRows.length > 0 ? structuredRows : taskFieldResults
+    } else {
+      fieldResults.value = []
     }
   } catch {
     ElMessage.error('加载任务失败')
@@ -201,23 +195,11 @@ async function refreshTask() {
   }
 }
 
-function startEdit(row) {
-  editingField.value = row.field_name
-  editValues.value[row.field_name] = formatValue(row.value)
-}
-
-async function saveEdit(row) {
-  // 更新本地
-  row.value = editValues.value[row.field_name]
-  editingField.value = null
-  ElMessage.success('已更新（仅本地预览，导出时生效）')
-}
-
 async function exportResult(format) {
   try {
     const res = await extractionApi.export({ task_ids: [task.value.id], format })
-    if (res.data.url) {
-      window.open(res.data.url, '_blank')
+    if (res.data.download_url) {
+      window.open(res.data.download_url, '_blank')
     }
     ElMessage.success('导出成功')
   } catch {

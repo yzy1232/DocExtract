@@ -23,6 +23,10 @@ from app.config import settings
 from app.processors.mime_resolver import normalize_mime_type
 
 
+EXTRACTION_CHUNK_SIZE = 7000
+EXTRACTION_CHUNK_OVERLAP = 800
+
+
 class ExtractionService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -156,26 +160,49 @@ class ExtractionService:
             task.progress_message = "正在调用LLM提取..."
             await self.db.flush()
 
-            # 构建提示词并调用 LLM
-            messages = self.prompt_engine.build_extraction_messages(
-                document_content=document_content,
-                template_fields=fields_data,
-                system_prompt=template.system_prompt,
-                extraction_prompt_template=template.extraction_prompt_template,
-                few_shot_examples=template.few_shot_examples,
-            )
-
             adapter = get_adapter_by_provider(task.llm_provider or settings.DEFAULT_LLM_PROVIDER)
             llm_config = get_default_llm_config(task.llm_provider, task.llm_model)
-            llm_response = await adapter.chat(messages, llm_config)
+            chunk_size = getattr(settings, "EXTRACTION_CHUNK_SIZE", EXTRACTION_CHUNK_SIZE)
+            chunk_overlap = getattr(settings, "EXTRACTION_CHUNK_OVERLAP", EXTRACTION_CHUNK_OVERLAP)
+            content_chunks = self._split_text_with_overlap(document_content, chunk_size, chunk_overlap)
 
-            task.token_used = llm_response.total_tokens
-            task.progress = 80.0
-            await self.db.flush()
+            parsed_chunks = []
+            total_tokens = 0
+            total_chunks = len(content_chunks)
+            for idx, chunk_content in enumerate(content_chunks, start=1):
+                if total_chunks > 1:
+                    chunk_content = (
+                        f"[文档切片 {idx}/{total_chunks}]\n"
+                        f"请仅基于当前切片提取，系统会自动合并所有切片结果。\n\n"
+                        f"{chunk_content}"
+                    )
+                    task.progress_message = f"正在调用LLM提取（分片 {idx}/{total_chunks}）..."
+                    await self.db.flush()
 
-            # 解析 LLM 响应
-            parsed = self.prompt_engine.parse_llm_response(llm_response.content)
+                messages = self.prompt_engine.build_extraction_messages(
+                    document_content=chunk_content,
+                    template_fields=fields_data,
+                    system_prompt=template.system_prompt,
+                    extraction_prompt_template=template.extraction_prompt_template,
+                    few_shot_examples=template.few_shot_examples,
+                )
+
+                llm_response = await adapter.chat(messages, llm_config)
+                total_tokens += llm_response.total_tokens or 0
+                parsed_chunks.append(self.prompt_engine.parse_llm_response(llm_response.content))
+
+                task.progress = 40.0 + (idx / total_chunks) * 40.0
+                await self.db.flush()
+
+            task.token_used = total_tokens
+
+            parsed = self._merge_chunk_parsed_results(
+                parsed_chunks,
+                [f.name for f in template.fields],
+            )
             extracted_fields = parsed.get("fields", {})
+            records = parsed.get("records", [])
+            records = records if isinstance(records, list) else []
 
             # 保存字段级结果
             structured_result = {}
@@ -183,14 +210,35 @@ class ExtractionService:
             valid_count = 0
             for field_def in template.fields:
                 field_val = extracted_fields.get(field_def.name, {})
+                record_values = []
+                for record in records:
+                    if not isinstance(record, dict):
+                        continue
+                    if field_def.name not in record:
+                        continue
+                    value = record.get(field_def.name)
+                    if value is None or value == "":
+                        continue
+                    record_values.append(value)
+
                 raw_value = field_val.get("value")
+                if record_values:
+                    raw_value = record_values if len(record_values) > 1 else record_values[0]
+
                 confidence = float(field_val.get("confidence", 0.0))
                 source_text = field_val.get("source_text", "")
 
                 normalized_value = self._normalize_value(raw_value, field_def.field_type)
+                validate_value = normalized_value[0] if isinstance(normalized_value, list) and normalized_value else normalized_value
                 is_valid, validation_error = self._validate_value(
-                    normalized_value, field_def.required, field_def.validation_rules
+                    validate_value, field_def.required, field_def.validation_rules
                 )
+
+                row_preview_value = normalized_value
+                if isinstance(normalized_value, list):
+                    row_preview_value = normalized_value[0] if normalized_value else None
+                if isinstance(row_preview_value, dict):
+                    row_preview_value = json.dumps(row_preview_value, ensure_ascii=False)
 
                 ef = ExtractionField(
                     id=str(uuid.uuid4()),
@@ -198,7 +246,7 @@ class ExtractionService:
                     field_id=field_def.id,
                     field_name=field_def.name,
                     raw_value=str(raw_value) if raw_value is not None else None,
-                    normalized_value=str(normalized_value) if normalized_value is not None else None,
+                    normalized_value=str(row_preview_value) if row_preview_value is not None else None,
                     value_type=field_def.field_type.value if hasattr(field_def.field_type, "value") else field_def.field_type,
                     confidence=confidence,
                     is_valid=is_valid,
@@ -219,7 +267,10 @@ class ExtractionService:
             extraction_result = ExtractionResult(
                 id=str(uuid.uuid4()),
                 task_id=task_id,
-                raw_result=parsed,
+                raw_result={
+                    "chunks": parsed_chunks,
+                    "merged": parsed,
+                },
                 structured_result=structured_result,
                 overall_confidence=overall_confidence,
                 validation_status="pending",
@@ -242,10 +293,129 @@ class ExtractionService:
         await self.db.flush()
         return task
 
+    def _split_text_with_overlap(self, text: str, chunk_size: int, overlap: int) -> List[str]:
+        """将长文本按固定窗口切片，并保留重叠区域减少漏提。"""
+        if not text:
+            return [""]
+        if chunk_size <= 0:
+            return [text]
+
+        overlap = max(0, min(overlap, chunk_size - 1))
+        chunks: List[str] = []
+        start = 0
+        text_len = len(text)
+
+        while start < text_len:
+            end = min(start + chunk_size, text_len)
+            chunks.append(text[start:end])
+            if end >= text_len:
+                break
+            start = end - overlap
+
+        return chunks
+
+    def _merge_chunk_parsed_results(self, parsed_chunks: List[Dict[str, Any]], field_names: List[str]) -> Dict[str, Any]:
+        """合并多切片抽取结果：聚合 fields，并去重合并 records。"""
+        merged_records: List[Dict[str, Any]] = []
+        seen_records = set()
+        field_values: Dict[str, List[Any]] = {name: [] for name in field_names}
+        field_confidence: Dict[str, float] = {name: 0.0 for name in field_names}
+        field_source: Dict[str, str] = {name: "" for name in field_names}
+
+        for parsed in parsed_chunks:
+            if not isinstance(parsed, dict):
+                continue
+
+            records = parsed.get("records", [])
+            if isinstance(records, list):
+                for record in records:
+                    if not isinstance(record, dict):
+                        continue
+                    normalized_record = {k: record.get(k) for k in field_names}
+                    rec_key = self._stable_dump(normalized_record)
+                    if rec_key in seen_records:
+                        continue
+                    seen_records.add(rec_key)
+                    merged_records.append(normalized_record)
+                    for field_name in field_names:
+                        value = normalized_record.get(field_name)
+                        self._append_unique_value(field_values[field_name], value)
+
+            fields = parsed.get("fields", {})
+            if not isinstance(fields, dict):
+                continue
+
+            for field_name in field_names:
+                field_obj = fields.get(field_name, {})
+                if not isinstance(field_obj, dict):
+                    continue
+
+                value = field_obj.get("value")
+                if isinstance(value, list):
+                    for item in value:
+                        self._append_unique_value(field_values[field_name], item)
+                else:
+                    self._append_unique_value(field_values[field_name], value)
+
+                confidence = field_obj.get("confidence", 0.0)
+                try:
+                    confidence = float(confidence)
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                field_confidence[field_name] = max(field_confidence[field_name], confidence)
+
+                source_text = str(field_obj.get("source_text") or "")
+                if len(source_text) > len(field_source[field_name]):
+                    field_source[field_name] = source_text
+
+        merged_fields = {}
+        for field_name in field_names:
+            values = field_values[field_name]
+            if len(values) == 0:
+                merged_value = None
+            elif len(values) == 1:
+                merged_value = values[0]
+            else:
+                merged_value = values
+
+            merged_fields[field_name] = {
+                "value": merged_value,
+                "confidence": field_confidence[field_name],
+                "source_text": field_source[field_name],
+            }
+
+        notes = [
+            str(p.get("extraction_notes", ""))
+            for p in parsed_chunks
+            if isinstance(p, dict) and p.get("extraction_notes")
+        ]
+
+        return {
+            "fields": merged_fields,
+            "records": merged_records,
+            "extraction_notes": " | ".join(notes[:5]),
+        }
+
+    def _stable_dump(self, value: Any) -> str:
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        except TypeError:
+            return str(value)
+
+    def _append_unique_value(self, values: List[Any], value: Any):
+        if value is None or value == "":
+            return
+        value_key = self._stable_dump(value)
+        existing = {self._stable_dump(v) for v in values}
+        if value_key not in existing:
+            values.append(value)
+
     def _normalize_value(self, value: Any, field_type) -> Any:
         """标准化字段值"""
         if value is None:
             return None
+        if isinstance(value, (list, dict)):
+            return value
         field_type_str = field_type.value if hasattr(field_type, "value") else str(field_type)
         if field_type_str == "number":
             try:
