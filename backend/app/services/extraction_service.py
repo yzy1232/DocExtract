@@ -25,12 +25,35 @@ from app.processors.mime_resolver import normalize_mime_type
 
 EXTRACTION_CHUNK_SIZE = 7000
 EXTRACTION_CHUNK_OVERLAP = 800
+EXTRACTION_CROSS_VALIDATE_ROUNDS = 2
+EXTRACTION_MIN_AGREEMENT = 2
 
 
 class ExtractionService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.prompt_engine = PromptEngine()
+
+    async def _checkpoint_progress(
+        self,
+        task: ExtractionTask,
+        progress: float,
+        message: Optional[str] = None,
+    ):
+        """持久化任务进度，保证轮询可见中间态。"""
+        task.progress = round(max(0.0, min(100.0, float(progress))), 2)
+        if message is not None:
+            task.progress_message = message
+        await self.db.flush()
+        await self.db.commit()
+
+    def _normalize_task_progress(self, task: ExtractionTask):
+        """统一任务进度显示，避免前后端状态与进度不一致。"""
+        progress = round(max(0.0, min(100.0, float(task.progress or 0.0))), 2)
+        if task.status == TaskStatus.COMPLETED:
+            task.progress = 100.0
+            return
+        task.progress = progress
 
     async def create_task(self, data: ExtractionCreate, creator_id: str) -> ExtractionTask:
         """创建提取任务并推送到队列"""
@@ -112,8 +135,7 @@ class ExtractionService:
 
         task.status = TaskStatus.PROCESSING
         task.started_at = datetime.now(timezone.utc)
-        task.progress = 5.0
-        await self.db.flush()
+        await self._checkpoint_progress(task, 5.0, "任务启动")
         await self._log(task_id, "info", "extraction_start", "开始执行提取任务")
 
         start_time = time.time()
@@ -134,8 +156,7 @@ class ExtractionService:
             parse_result = await processor.parse(file_content, document.name)
             document_content = parse_result.full_text
 
-            task.progress = 30.0
-            await self.db.flush()
+            await self._checkpoint_progress(task, 30.0, "文档解析完成")
 
             # 获取模板和字段
             tmpl_result = await self.db.execute(
@@ -156,19 +177,23 @@ class ExtractionService:
                 for f in template.fields
             ]
 
-            task.progress = 40.0
-            task.progress_message = "正在调用LLM提取..."
-            await self.db.flush()
+            await self._checkpoint_progress(task, 40.0, "正在调用LLM提取...")
 
             adapter = get_adapter_by_provider(task.llm_provider or settings.DEFAULT_LLM_PROVIDER)
             llm_config = get_default_llm_config(task.llm_provider, task.llm_model)
             chunk_size = getattr(settings, "EXTRACTION_CHUNK_SIZE", EXTRACTION_CHUNK_SIZE)
             chunk_overlap = getattr(settings, "EXTRACTION_CHUNK_OVERLAP", EXTRACTION_CHUNK_OVERLAP)
+            cross_validate_rounds = max(1, int(getattr(settings, "EXTRACTION_CROSS_VALIDATE_ROUNDS", EXTRACTION_CROSS_VALIDATE_ROUNDS)))
+            min_agreement = max(1, int(getattr(settings, "EXTRACTION_MIN_AGREEMENT", EXTRACTION_MIN_AGREEMENT)))
+            min_agreement = min(min_agreement, cross_validate_rounds)
             content_chunks = self._split_text_with_overlap(document_content, chunk_size, chunk_overlap)
 
             parsed_chunks = []
+            chunk_round_parsed = []
             total_tokens = 0
             total_chunks = len(content_chunks)
+            total_calls = max(1, total_chunks * cross_validate_rounds)
+            completed_calls = 0
             for idx, chunk_content in enumerate(content_chunks, start=1):
                 if total_chunks > 1:
                     chunk_content = (
@@ -176,23 +201,46 @@ class ExtractionService:
                         f"请仅基于当前切片提取，系统会自动合并所有切片结果。\n\n"
                         f"{chunk_content}"
                     )
-                    task.progress_message = f"正在调用LLM提取（分片 {idx}/{total_chunks}）..."
+
+                current_chunk_round_results = []
+                for round_idx in range(1, cross_validate_rounds + 1):
+                    task.progress_message = (
+                        f"正在交叉验证提取（分片 {idx}/{total_chunks}，轮次 {round_idx}/{cross_validate_rounds}）..."
+                    )
                     await self.db.flush()
 
-                messages = self.prompt_engine.build_extraction_messages(
-                    document_content=chunk_content,
-                    template_fields=fields_data,
-                    system_prompt=template.system_prompt,
-                    extraction_prompt_template=template.extraction_prompt_template,
-                    few_shot_examples=template.few_shot_examples,
+                    round_prompt_content = (
+                        f"{chunk_content}\n\n"
+                        f"[交叉验证轮次 {round_idx}/{cross_validate_rounds}]"
+                    )
+                    messages = self.prompt_engine.build_extraction_messages(
+                        document_content=round_prompt_content,
+                        template_fields=fields_data,
+                        system_prompt=template.system_prompt,
+                        extraction_prompt_template=template.extraction_prompt_template,
+                        few_shot_examples=template.few_shot_examples,
+                    )
+
+                    llm_response = await adapter.chat(messages, llm_config)
+                    total_tokens += llm_response.total_tokens or 0
+                    parsed_round = self.prompt_engine.parse_llm_response(llm_response.content)
+                    current_chunk_round_results.append(parsed_round)
+
+                    completed_calls += 1
+                    await self._checkpoint_progress(
+                        task,
+                        40.0 + (completed_calls / total_calls) * 40.0,
+                        task.progress_message,
+                    )
+
+                chunk_round_parsed.append(current_chunk_round_results)
+                parsed_chunks.append(
+                    self._consensus_chunk_parsed_results(
+                        current_chunk_round_results,
+                        [f.name for f in template.fields],
+                        min_agreement,
+                    )
                 )
-
-                llm_response = await adapter.chat(messages, llm_config)
-                total_tokens += llm_response.total_tokens or 0
-                parsed_chunks.append(self.prompt_engine.parse_llm_response(llm_response.content))
-
-                task.progress = 40.0 + (idx / total_chunks) * 40.0
-                await self.db.flush()
 
             task.token_used = total_tokens
 
@@ -262,14 +310,18 @@ class ExtractionService:
                     valid_count += 1
 
             overall_confidence = total_confidence / valid_count if valid_count > 0 else 0.0
+            await self._checkpoint_progress(task, 90.0, "正在保存提取结果...")
 
             # 保存汇总结果
             extraction_result = ExtractionResult(
                 id=str(uuid.uuid4()),
                 task_id=task_id,
                 raw_result={
+                    "chunk_rounds": chunk_round_parsed,
                     "chunks": parsed_chunks,
                     "merged": parsed,
+                    "cross_validate_rounds": cross_validate_rounds,
+                    "min_agreement": min_agreement,
                 },
                 structured_result=structured_result,
                 overall_confidence=overall_confidence,
@@ -288,9 +340,13 @@ class ExtractionService:
             task.status = TaskStatus.FAILED
             task.error_message = str(e)
             task.processing_time_ms = int((time.time() - start_time) * 1000)
+            if task.progress < 95:
+                task.progress = max(task.progress, 1.0)
+            task.progress_message = "提取失败"
             await self._log(task_id, "error", "extraction_failed", str(e))
 
         await self.db.flush()
+        await self.db.commit()
         return task
 
     def _split_text_with_overlap(self, text: str, chunk_size: int, overlap: int) -> List[str]:
@@ -396,6 +452,113 @@ class ExtractionService:
             "extraction_notes": " | ".join(notes[:5]),
         }
 
+    def _consensus_chunk_parsed_results(
+        self,
+        parsed_rounds: List[Dict[str, Any]],
+        field_names: List[str],
+        min_agreement: int,
+    ) -> Dict[str, Any]:
+        """对同一切片多轮抽取做交叉验证，输出一致性结果。"""
+        record_votes: Dict[str, Dict[str, Any]] = {}
+        field_candidates: Dict[str, Dict[str, int]] = {name: {} for name in field_names}
+        field_candidate_values: Dict[str, Dict[str, Any]] = {name: {} for name in field_names}
+        field_confidences: Dict[str, List[float]] = {name: [] for name in field_names}
+        field_sources: Dict[str, str] = {name: "" for name in field_names}
+
+        for parsed in parsed_rounds:
+            if not isinstance(parsed, dict):
+                continue
+
+            fields = parsed.get("fields", {})
+            if isinstance(fields, dict):
+                for field_name in field_names:
+                    field_obj = fields.get(field_name, {})
+                    if not isinstance(field_obj, dict):
+                        continue
+
+                    value = field_obj.get("value")
+                    if isinstance(value, list):
+                        for item in value:
+                            if item is None or item == "":
+                                continue
+                            item_key = self._stable_dump(item)
+                            field_candidates[field_name][item_key] = field_candidates[field_name].get(item_key, 0) + 1
+                            field_candidate_values[field_name][item_key] = item
+                    elif value is not None and value != "":
+                        value_key = self._stable_dump(value)
+                        field_candidates[field_name][value_key] = field_candidates[field_name].get(value_key, 0) + 1
+                        field_candidate_values[field_name][value_key] = value
+
+                    confidence = field_obj.get("confidence", 0.0)
+                    try:
+                        confidence = float(confidence)
+                    except (TypeError, ValueError):
+                        confidence = 0.0
+                    if confidence > 0:
+                        field_confidences[field_name].append(confidence)
+
+                    source_text = str(field_obj.get("source_text") or "")
+                    if len(source_text) > len(field_sources[field_name]):
+                        field_sources[field_name] = source_text
+
+            records = parsed.get("records", [])
+            if not isinstance(records, list):
+                continue
+
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                normalized_record = {k: record.get(k) for k in field_names}
+                rec_key = self._stable_dump(normalized_record)
+                if rec_key not in record_votes:
+                    record_votes[rec_key] = {"count": 0, "record": normalized_record}
+                record_votes[rec_key]["count"] += 1
+
+        agreed_records = [
+            v["record"]
+            for v in sorted(record_votes.values(), key=lambda x: x["count"], reverse=True)
+            if v["count"] >= min_agreement
+        ]
+
+        if not agreed_records:
+            fallback = sorted(record_votes.values(), key=lambda x: x["count"], reverse=True)
+            agreed_records = [x["record"] for x in fallback[:1]]
+
+        merged_fields: Dict[str, Dict[str, Any]] = {}
+        for field_name in field_names:
+            values_from_records: List[Any] = []
+            for record in agreed_records:
+                self._append_unique_value(values_from_records, record.get(field_name))
+
+            voted_values = [
+                field_candidate_values[field_name][k]
+                for k, c in sorted(field_candidates[field_name].items(), key=lambda x: x[1], reverse=True)
+                if c >= min_agreement
+            ]
+
+            chosen_values = values_from_records if values_from_records else voted_values
+            if len(chosen_values) == 0:
+                merged_value = None
+            elif len(chosen_values) == 1:
+                merged_value = chosen_values[0]
+            else:
+                merged_value = chosen_values
+
+            conf_list = field_confidences[field_name]
+            avg_conf = sum(conf_list) / len(conf_list) if conf_list else 0.0
+
+            merged_fields[field_name] = {
+                "value": merged_value,
+                "confidence": round(avg_conf, 4),
+                "source_text": field_sources[field_name],
+            }
+
+        return {
+            "fields": merged_fields,
+            "records": agreed_records,
+            "extraction_notes": f"cross_validate_rounds={len(parsed_rounds)}, min_agreement={min_agreement}",
+        }
+
     def _stable_dump(self, value: Any) -> str:
         try:
             return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -471,6 +634,7 @@ class ExtractionService:
         task = result.scalar_one_or_none()
         if not task:
             raise NotFoundException("提取任务", task_id)
+        self._normalize_task_progress(task)
         return task
 
     async def list_tasks(
@@ -504,7 +668,10 @@ class ExtractionService:
             .limit(page_size)
         )
         result = await self.db.execute(query)
-        return result.scalars().all(), total
+        tasks = result.scalars().all()
+        for task in tasks:
+            self._normalize_task_progress(task)
+        return tasks, total
 
     async def validate_result(
         self, task_id: str, data: ResultValidationUpdate, validator_id: str

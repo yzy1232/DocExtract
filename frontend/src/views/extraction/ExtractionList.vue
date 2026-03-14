@@ -51,9 +51,9 @@
           <template #default="{ row }">
             <el-progress
               v-if="['running', 'processing'].includes(row.status)"
-              :percentage="row.progress ?? 0"
+              :percentage="getSmoothProgress(row)"
               :stroke-width="8"
-              :show-text="false"
+              :format="formatPercentage"
             />
             <span v-else>-</span>
           </template>
@@ -136,7 +136,9 @@ const router = useRouter()
 const loading = ref(false)
 const tasks = ref([])
 const total = ref(0)
+const smoothProgressMap = ref({})
 let timer = null
+let smoothTimer = null
 
 const query = reactive({ status: '', page: 1, page_size: 10 })
 
@@ -161,11 +163,75 @@ function shortId(id) {
   return String(id).slice(0, 8)
 }
 
+function normalizeProgress(progress) {
+  if (Number.isNaN(Number(progress))) return 0
+  return Math.max(0, Math.min(100, Number(progress)))
+}
+
+function round2(num) {
+  return Math.round(num * 100) / 100
+}
+
+function formatPercentage(percentage) {
+  return `${round2(Number(percentage) || 0).toFixed(2)}%`
+}
+
+function getSmoothProgress(row) {
+  const cached = smoothProgressMap.value[row.id]
+  if (typeof cached === 'number') {
+    return round2(cached)
+  }
+  return round2(normalizeProgress(row.progress ?? 0))
+}
+
+function syncProgressTargets() {
+  const aliveIds = new Set(tasks.value.map(item => item.id))
+  tasks.value.forEach((item) => {
+    const current = smoothProgressMap.value[item.id]
+    const target = normalizeProgress(item.progress ?? 0)
+    if (typeof current !== 'number') {
+      smoothProgressMap.value[item.id] = target
+    }
+  })
+
+  Object.keys(smoothProgressMap.value).forEach((id) => {
+    if (!aliveIds.has(id)) {
+      delete smoothProgressMap.value[id]
+    }
+  })
+}
+
+function startSmoothTicker() {
+  if (smoothTimer) return
+  smoothTimer = setInterval(() => {
+    tasks.value.forEach((item) => {
+      const id = item.id
+      const target = normalizeProgress(item.progress ?? 0)
+      const current = normalizeProgress(smoothProgressMap.value[id] ?? target)
+      const delta = target - current
+      if (Math.abs(delta) < 0.2) {
+        smoothProgressMap.value[id] = round2(target)
+        return
+      }
+
+      // 任务进行中使用较平滑的步进，完成态直接对齐到终值
+      if (['completed', 'failed', 'cancelled'].includes(item.status)) {
+        smoothProgressMap.value[id] = round2(target)
+        return
+      }
+
+      const step = Math.max(0.3, Math.abs(delta) * 0.18)
+      smoothProgressMap.value[id] = round2(current + Math.sign(delta) * step)
+    })
+  }, 120)
+}
+
 async function loadTasks() {
   loading.value = true
   try {
     const res = await extractionApi.list(query)
     tasks.value = res.data.items
+    syncProgressTargets()
     total.value = res.data.pagination.total
   } catch {
     ElMessage.error('加载任务列表失败')
@@ -182,6 +248,7 @@ function resetQuery() {
 
 onMounted(() => {
   loadTasks()
+  startSmoothTicker()
   // 每 10s 自动刷新正在运行的任务
   timer = setInterval(() => {
     if (tasks.value.some(t => ['pending', 'running', 'processing', 'queued'].includes(t.status))) {
@@ -190,7 +257,10 @@ onMounted(() => {
   }, 10000)
 })
 
-onBeforeUnmount(() => clearInterval(timer))
+onBeforeUnmount(() => {
+  clearInterval(timer)
+  clearInterval(smoothTimer)
+})
 </script>
 
 <style scoped>

@@ -21,7 +21,7 @@
     <!-- 运行中进度条 -->
     <el-card v-if="['pending', 'running', 'queued', 'processing'].includes(task.status)" shadow="never" class="progress-card">
       <div class="progress-center">
-        <el-progress type="circle" :percentage="task.progress ?? 0" :width="120" />
+        <el-progress type="circle" :percentage="smoothProgress" :width="120" :format="formatPercentage" />
         <div class="progress-desc">
           <p class="progress-status">{{ statusLabelMap[task.status] }}</p>
           <p class="progress-hint">提取任务正在后台处理，请稍候…</p>
@@ -98,7 +98,9 @@ const route = useRoute()
 const loading = ref(false)
 const task = ref({})
 const fieldResults = ref([])
+const smoothProgress = ref(0)
 let pollTimer = null
+let smoothTimer = null
 
 const matrixColumns = computed(() => {
   if (!Array.isArray(fieldResults.value)) return []
@@ -149,10 +151,47 @@ function formatValue(val) {
   return String(val)
 }
 
+function normalizeProgress(progress) {
+  if (Number.isNaN(Number(progress))) return 0
+  return Math.max(0, Math.min(100, Number(progress)))
+}
+
+function round2(num) {
+  return Math.round(num * 100) / 100
+}
+
+function formatPercentage(percentage) {
+  return `${round2(Number(percentage) || 0).toFixed(2)}%`
+}
+
+function syncSmoothProgress() {
+  const target = normalizeProgress(task.value.progress ?? 0)
+  const isDone = ['completed', 'failed', 'cancelled'].includes(task.value.status)
+
+  if (isDone) {
+    smoothProgress.value = round2(target)
+    return
+  }
+
+  if (!smoothTimer) {
+    smoothTimer = setInterval(() => {
+      const latestTarget = normalizeProgress(task.value.progress ?? 0)
+      const delta = latestTarget - smoothProgress.value
+      if (Math.abs(delta) < 0.2) {
+        smoothProgress.value = round2(latestTarget)
+        return
+      }
+      const step = Math.max(0.4, Math.abs(delta) * 0.2)
+      smoothProgress.value = round2(smoothProgress.value + Math.sign(delta) * step)
+    }, 120)
+  }
+}
+
 async function loadTask() {
   try {
     const res = await extractionApi.get(route.params.id)
     task.value = res.data || {}
+    syncSmoothProgress()
 
     const taskFieldResults = Array.isArray(task.value.field_results)
       ? task.value.field_results.map((item) => ({
@@ -223,7 +262,10 @@ onMounted(async () => {
   }
 })
 
-onBeforeUnmount(() => clearInterval(pollTimer))
+onBeforeUnmount(() => {
+  clearInterval(pollTimer)
+  clearInterval(smoothTimer)
+})
 </script>
 
 <style scoped>

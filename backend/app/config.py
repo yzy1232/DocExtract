@@ -121,6 +121,8 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = 3
     EXTRACTION_CHUNK_SIZE: int = 7000
     EXTRACTION_CHUNK_OVERLAP: int = 800
+    EXTRACTION_CROSS_VALIDATE_ROUNDS: int = 2
+    EXTRACTION_MIN_AGREEMENT: int = 2
 
     # ========================
     # Celery 任务队列配置
