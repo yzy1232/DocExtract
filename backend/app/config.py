@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     STORAGE_BUCKET_RESULTS: str = "results"
     STORAGE_BUCKET_TEMP: str = "temp"
     STORAGE_SECURE: bool = False
+    # 对外可访问的对象存储地址（用于生成浏览器可访问的预签名 URL）
+    # 示例: "http://localhost:9000" 或 "https://storage.example.com"
+    STORAGE_PUBLIC_ENDPOINT: Optional[str] = None
 
     # ========================
     # LLM 提供商配置

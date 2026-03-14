@@ -40,6 +40,10 @@ request.interceptors.request.use(
 // 响应拦截器 - 统一错误处理
 request.interceptors.response.use(
   (response) => {
+    // 如果是二进制下载请求，直接返回原始 response，让调用方处理 blob
+    if (response.config && response.config.responseType === 'blob') {
+      return response
+    }
     const data = response.data
     if (data.code && data.code !== 200) {
       ElMessage.error(data.message || '请求失败')

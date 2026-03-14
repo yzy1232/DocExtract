@@ -13,6 +13,10 @@ from app.models.user import User
 from app.models.document import DocumentStatus
 from app.config import settings
 from app.processors.mime_resolver import normalize_mime_type
+from fastapi.responses import StreamingResponse
+import io
+import asyncio
+from urllib.parse import quote
 
 router = APIRouter(prefix="/documents", tags=["文档管理"])
 
@@ -166,3 +170,38 @@ async def delete_document(
     document = await svc.get_by_id(document_id, owner_id=owner_id)
     await svc.soft_delete(document)
     return ResponseBase(data=MessageResponse(message="文档已删除"))
+
+
+@router.get("/{document_id}/download", summary="通过后端代理下载文档")
+async def download_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """后端代理下载：由后端从对象存储拉取并转发给客户端，避免前端直接使用预签名 URL 导致的签名或跨域问题。"""
+    svc = DocumentService(db)
+    owner_id = None if current_user.is_superuser else current_user.id
+    document = await svc.get_by_id(document_id, owner_id=owner_id)
+
+    # 从存储下载（阻塞 IO，放到线程池中执行）
+    from app.core.storage import storage
+
+    try:
+        content = await asyncio.to_thread(storage.download_file, document.storage_bucket, document.storage_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"下载文件失败: {str(e)}")
+
+    filename = document.display_name or document.name or "download"
+    # 为避免非 latin-1 字符导致的编码错误，按 RFC5987 提供 filename*，并提供 ASCII 回退
+    def _ascii_fallback(name: str) -> str:
+        try:
+            name.encode('ascii')
+            return name
+        except UnicodeEncodeError:
+            return ''.join(c if ord(c) < 128 else '_' for c in name)
+
+    ascii_name = _ascii_fallback(filename)
+    quoted = quote(filename)
+    content_disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+    headers = {"Content-Disposition": content_disposition}
+    return StreamingResponse(io.BytesIO(content), media_type=document.mime_type or "application/octet-stream", headers=headers)

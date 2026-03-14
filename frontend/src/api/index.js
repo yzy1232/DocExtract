@@ -53,6 +53,9 @@ export const documentApi = {
   // 获取下载URL
   getDownloadUrl: (id) => request.get(`/documents/${id}/download-url`),
 
+  // 通过后端代理下载文件（返回 blob）
+  download: (id) => request.get(`/documents/${id}/download`, { responseType: 'blob' }),
+
   // 删除文档
   delete: (id) => request.delete(`/documents/${id}`),
 }

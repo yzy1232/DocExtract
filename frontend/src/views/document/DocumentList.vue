@@ -173,10 +173,18 @@ function createExtraction(docId) {
 
 async function downloadDoc(row) {
   try {
-    const res = await documentApi.getDownloadUrl(row.id)
-    window.open(res.data.url, '_blank')
+    const res = await documentApi.download(row.id)
+    const blob = res.data
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = row.display_name || row.name || 'download'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.URL.revokeObjectURL(url)
   } catch {
-    ElMessage.error('获取下载链接失败')
+    ElMessage.error('下载失败')
   }
 }
 

@@ -4,7 +4,7 @@
 import io
 import hashlib
 from typing import Optional, BinaryIO
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 from minio import Minio
 from minio.error import S3Error
 from app.config import settings
@@ -109,9 +109,20 @@ class StorageManager:
     ) -> str:
         """生成预签名下载 URL"""
         from datetime import timedelta
-        return self._client.presigned_get_object(
+        url = self._client.presigned_get_object(
             bucket, object_name, expires=timedelta(seconds=expires_seconds)
         )
+        public = getattr(settings, "STORAGE_PUBLIC_ENDPOINT", None)
+        if public:
+            try:
+                parsed = urlparse(url)
+                pub_parsed = urlparse(public)
+                # 以 public 的 scheme/hostname/port 覆盖 presigned URL 的对应部分
+                new_parsed = parsed._replace(scheme=pub_parsed.scheme or parsed.scheme, netloc=pub_parsed.netloc or pub_parsed.path)
+                return urlunparse(new_parsed)
+            except Exception:
+                return url
+        return url
 
     def get_upload_presigned_url(
         self,
