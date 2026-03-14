@@ -27,6 +27,7 @@ EXTRACTION_CHUNK_SIZE = 7000
 EXTRACTION_CHUNK_OVERLAP = 800
 EXTRACTION_CROSS_VALIDATE_ROUNDS = 2
 EXTRACTION_MIN_AGREEMENT = 2
+EXTRACTION_STALE_TIMEOUT_SECONDS = 300
 
 
 class ExtractionService:
@@ -54,6 +55,37 @@ class ExtractionService:
             task.progress = 100.0
             return
         task.progress = progress
+
+    def _is_stale_running_task(self, task: ExtractionTask) -> bool:
+        if task.status not in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING, TaskStatus.RETRYING):
+            return False
+        if not task.updated_at:
+            return False
+
+        timeout_seconds = int(getattr(settings, "EXTRACTION_STALE_TIMEOUT_SECONDS", EXTRACTION_STALE_TIMEOUT_SECONDS))
+        timeout_seconds = max(60, timeout_seconds)
+
+        if task.updated_at.tzinfo:
+            now = datetime.now(task.updated_at.tzinfo)
+        else:
+            now = datetime.utcnow()
+
+        age_seconds = (now - task.updated_at).total_seconds()
+        return age_seconds >= timeout_seconds
+
+    def _mark_task_stale_failed(self, task: ExtractionTask):
+        if not self._is_stale_running_task(task):
+            return
+
+        task.status = TaskStatus.FAILED
+        task.completed_at = datetime.now(timezone.utc)
+        task.progress_message = "任务处理超时，已自动标记失败"
+        stale_error = "stale-sync: task exceeded processing timeout and was auto-marked failed"
+        if task.error_message:
+            if stale_error not in task.error_message:
+                task.error_message = f"{task.error_message} | {stale_error}"
+        else:
+            task.error_message = stale_error
 
     async def create_task(self, data: ExtractionCreate, creator_id: str) -> ExtractionTask:
         """创建提取任务并推送到队列"""
@@ -88,6 +120,11 @@ class ExtractionService:
         self.db.add(task)
         await self.db.flush()
 
+        # 先提交任务主记录，避免 Celery 过快消费时读不到未提交事务中的任务。
+        template.use_count += 1
+        await self.db.flush()
+        await self.db.commit()
+
         # 推送到 Celery 任务队列
         try:
             from app.tasks.extraction_tasks import run_extraction_task
@@ -98,14 +135,14 @@ class ExtractionService:
             )
             task.celery_task_id = celery_task.id
             task.status = TaskStatus.QUEUED
-            await self.db.flush()
+            task.progress_message = "任务已入队"
         except Exception:
             # Celery 不可用时，标记为待处理
-            pass
+            task.status = TaskStatus.PENDING
+            task.progress_message = "队列不可用，任务待调度"
 
-        # 更新模板使用计数
-        template.use_count += 1
         await self.db.flush()
+        await self.db.commit()
 
         # 避免 API 序列化阶段触发异步懒加载（MissingGreenlet）
         await self.db.refresh(task, attribute_names=["created_at", "updated_at", "results", "field_results"])
@@ -132,6 +169,11 @@ class ExtractionService:
         task = result.scalar_one_or_none()
         if not task:
             raise NotFoundException("提取任务", task_id)
+
+        # 幂等保护：重投或重复消费时不重复执行终态任务。
+        if task.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED):
+            self._normalize_task_progress(task)
+            return task
 
         task.status = TaskStatus.PROCESSING
         task.started_at = datetime.now(timezone.utc)
@@ -634,6 +676,11 @@ class ExtractionService:
         task = result.scalar_one_or_none()
         if not task:
             raise NotFoundException("提取任务", task_id)
+
+        self._mark_task_stale_failed(task)
+        await self.db.flush()
+        await self.db.commit()
+
         self._normalize_task_progress(task)
         return task
 
@@ -669,8 +716,18 @@ class ExtractionService:
         )
         result = await self.db.execute(query)
         tasks = result.scalars().all()
+        need_commit = False
         for task in tasks:
+            before_status = task.status
+            self._mark_task_stale_failed(task)
+            if task.status != before_status:
+                need_commit = True
             self._normalize_task_progress(task)
+
+        if need_commit:
+            await self.db.flush()
+            await self.db.commit()
+
         return tasks, total
 
     async def validate_result(

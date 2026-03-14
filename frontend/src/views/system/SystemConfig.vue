@@ -203,7 +203,8 @@ async function testLLM(row) {
     if (res.data?.success) {
       ElMessage.success(`连接成功，延迟 ${latency} ms`)
     } else {
-      ElMessage.error('连接失败，请检查 API Key 和地址')
+      const err = res.data?.error_message
+      ElMessage.error(err ? `连接失败: ${err}` : '连接失败，请检查 API Key 和地址')
     }
     loadLLMConfigs()
   } catch {

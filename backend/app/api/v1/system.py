@@ -240,6 +240,7 @@ async def test_llm_config(
 
     start = time.time()
     success = False
+    error_message = None
     try:
         # 优先使用 DB 中存储的凭据（以配置中 base_url/api_key 为准）
         if config.base_url and config.api_key_encrypted:
@@ -254,8 +255,8 @@ async def test_llm_config(
             # 回退到系统默认适配器
             adapter = get_default_adapter()
         success = await adapter.test_connection()
-    except Exception:
-        pass
+    except Exception as e:
+        error_message = str(e)
 
     latency_ms = int((time.time() - start) * 1000)
     config.last_test_at = datetime.now(timezone.utc)
@@ -263,7 +264,7 @@ async def test_llm_config(
     config.last_test_latency_ms = latency_ms
     await db.flush()
 
-    return ResponseBase(data={"success": success, "latency_ms": latency_ms})
+    return ResponseBase(data={"success": success, "latency_ms": latency_ms, "error_message": error_message})
 
 
 @router.get('/configs', response_model=ResponseBase[list[dict]], summary='获取系统配置列表')

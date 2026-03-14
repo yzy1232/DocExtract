@@ -48,6 +48,10 @@ celery_app.conf.update(
     worker_concurrency=settings.CELERY_MAX_WORKERS,
     # 保持与未来 Celery 版本的兼容：在启动时重试 broker 连接
     broker_connection_retry_on_startup=True,
+    # Redis 传输配置：worker 异常退出后，任务在超时后可重新投递，避免长期卡在 unacked。
+    broker_transport_options={
+        "visibility_timeout": 300,
+    },
     # 使 worker 发布事件，以便 Flower 能够通过 inspector 获取队列/任务状态
     worker_send_task_events=True,
     task_send_sent_event=True,

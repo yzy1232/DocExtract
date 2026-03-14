@@ -15,9 +15,10 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
     def __init__(self, api_key: str, base_url: str, provider: str = "openai", test_model: Optional[str] = None):
         self._provider = provider
         self._test_model = test_model
+        normalized_base_url = self._normalize_base_url(base_url)
         self._client = AsyncOpenAI(
             api_key=api_key,
-            base_url=base_url,
+            base_url=normalized_base_url,
         )
 
     @property
@@ -80,7 +81,7 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         """流式响应"""
         try:
             stream = await self._client.chat.completions.create(
-                model=config.model,
+                model=config.model.strip(),
                 messages=self._build_messages_dicts(messages),
                 temperature=config.temperature,
                 max_tokens=config.max_tokens,
@@ -95,27 +96,59 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
 
     async def test_connection(self) -> bool:
         """测试连接"""
+        model = self._get_test_model()
+        payload_variants = [
+            {"max_tokens": 5},
+            {"max_completion_tokens": 5},
+            {},
+        ]
+        last_error: Optional[Exception] = None
+
         try:
-            await asyncio.wait_for(
-                self._client.chat.completions.create(
-                    model=self._get_test_model(),
-                    messages=[{"role": "user", "content": "hi"}],
-                    max_tokens=5,
-                ),
-                timeout=15,
-            )
-            return True
-        except Exception:
+            for extra_kwargs in payload_variants:
+                try:
+                    await asyncio.wait_for(
+                        self._client.chat.completions.create(
+                            model=model,
+                            messages=[{"role": "user", "content": "hi"}],
+                            **extra_kwargs,
+                        ),
+                        timeout=15,
+                    )
+                    return True
+                except TypeError as e:
+                    # 部分 SDK 版本可能不支持 max_completion_tokens 等参数，继续尝试兼容分支。
+                    last_error = e
+                    continue
+                except APIError as e:
+                    # 模型或网关可能拒绝某些参数形式，继续尝试下一种请求体。
+                    last_error = e
+                    continue
+                except Exception as e:
+                    last_error = e
+                    continue
+            if last_error:
+                raise LLMException(message=f"{self._provider} 连接测试失败", detail=str(last_error))
             return False
+        except LLMException:
+            raise
+        except Exception as e:
+            raise LLMException(message=f"{self._provider} 连接测试失败", detail=str(e))
+
+    def _normalize_base_url(self, base_url: str) -> str:
+        """统一 base_url，避免把完整 endpoint 当作 base URL 导致 400/404。"""
+        if not base_url:
+            return base_url
+
+        normalized = base_url.strip().rstrip("/")
+        for suffix in ("/chat/completions", "/v1/chat/completions"):
+            if normalized.endswith(suffix):
+                normalized = normalized[: -len(suffix)]
+                break
+        return normalized
 
     def _get_test_model(self) -> str:
         """获取测试时使用的模型"""
         if self._test_model:
             return self._test_model
-
-        test_models = {
-            "openai": "gpt-4o-mini",
-            "deepseek": "deepseek-chat",
-            "default": "gpt-3.5-turbo",
-        }
-        return test_models.get(self._provider, test_models["default"])
+        raise LLMException(message=f"{self._provider} 连接测试失败", detail="未指定测试模型，无法进行连接测试")
