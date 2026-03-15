@@ -35,11 +35,22 @@
           <el-button type="primary" :icon="Search" @click="loadTemplates">搜索</el-button>
           <el-button @click="resetQuery">重置</el-button>
         </el-col>
+        <el-col :span="7" style="text-align:right">
+          <el-button
+            type="danger"
+            plain
+            :disabled="selectedIds.length === 0"
+            @click="handleBatchDelete"
+          >
+            批量删除（{{ selectedIds.length }}）
+          </el-button>
+        </el-col>
       </el-row>
     </el-card>
 
     <el-card shadow="never">
-      <el-table :data="templates" v-loading="loading" stripe row-key="id" style="width:100%">
+      <el-table :data="templates" v-loading="loading" stripe row-key="id" style="width:100%" @selection-change="handleSelectionChange">
+        <el-table-column type="selection" width="42" />
         <el-table-column prop="name" label="模板名称" min-width="180">
           <template #default="{ row }">
             <el-link type="primary" @click="router.push(`/templates/${row.id}`)">
@@ -98,7 +109,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
@@ -108,11 +119,13 @@ const router = useRouter()
 const loading = ref(false)
 const templates = ref([])
 const total = ref(0)
+const selectedRows = ref([])
 
 const query = reactive({ keyword: '', status: '', page: 1, page_size: 10 })
 
 const statusTypeMap = { draft: 'info', active: 'success', deprecated: 'warning', archived: 'danger' }
 const statusLabelMap = { draft: '草稿', active: '已发布', deprecated: '已废弃', archived: '已归档' }
+const selectedIds = computed(() => selectedRows.value.map(item => item.id))
 
 function formatDate(str) {
   if (!str) return '-'
@@ -137,6 +150,10 @@ async function loadTemplates() {
   }
 }
 
+function handleSelectionChange(rows) {
+  selectedRows.value = rows
+}
+
 function resetQuery() {
   query.keyword = ''
   query.status = ''
@@ -152,6 +169,22 @@ async function handleDelete(row) {
     loadTemplates()
   } catch {
     ElMessage.error('删除失败')
+  }
+}
+
+async function handleBatchDelete() {
+  if (selectedIds.value.length === 0) return
+  await ElMessageBox.confirm(`确认删除选中的 ${selectedIds.value.length} 个模板？`, '批量删除确认', { type: 'warning' })
+
+  const results = await Promise.allSettled(selectedIds.value.map(id => templateApi.delete(id)))
+  const successCount = results.filter(item => item.status === 'fulfilled').length
+
+  if (successCount > 0) {
+    ElMessage.success(`已删除 ${successCount} 个模板`)
+    loadTemplates()
+  }
+  if (successCount < selectedIds.value.length) {
+    ElMessage.warning(`有 ${selectedIds.value.length - successCount} 个模板删除失败`)
   }
 }
 

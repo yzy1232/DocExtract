@@ -73,6 +73,18 @@ export const extractionApi = {
   // 任务详情
   get: (id) => request.get(`/extractions/${id}`),
 
+  // 重启失败任务
+  restart: (id) => request.post(`/extractions/${id}/restart`),
+
+  // 删除失败任务
+  delete: (id) => request.delete(`/extractions/${id}`),
+
+  // 批量重启失败任务
+  batchRestart: (taskIds) => request.post('/extractions/batch-restart', { task_ids: taskIds }),
+
+  // 批量删除失败任务
+  batchDelete: (taskIds) => request.post('/extractions/batch-delete', { task_ids: taskIds }),
+
   // 获取提取结果
   getResults: (id) => request.get(`/extractions/${id}/results`),
 

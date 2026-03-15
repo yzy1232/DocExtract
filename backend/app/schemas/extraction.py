@@ -164,3 +164,7 @@ class ExportRequest(BaseModel):
     task_ids: List[str] = Field(min_length=1, max_length=100)
     format: str = Field(default="xlsx", pattern="^(xlsx|csv|json|pdf)$")
     include_confidence: bool = False
+
+
+class TaskBatchAction(BaseModel):
+    task_ids: List[str] = Field(min_length=1, max_length=100)

@@ -27,7 +27,7 @@
         <el-col :span="5">
           <el-select v-model="query.status" placeholder="处理状态" clearable style="width:100%">
             <el-option label="已上传" value="uploaded" />
-            <el-option label="解析中" value="processing" />
+            <el-option label="处理中" value="processing" />
             <el-option label="已完成" value="processed" />
             <el-option label="解析失败" value="failed" />
           </el-select>
@@ -36,11 +36,22 @@
           <el-button type="primary" :icon="Search" @click="loadDocuments">搜索</el-button>
           <el-button @click="resetQuery">重置</el-button>
         </el-col>
+        <el-col :span="7" style="text-align:right">
+          <el-button
+            type="danger"
+            plain
+            :disabled="selectedIds.length === 0"
+            @click="handleBatchDelete"
+          >
+            批量删除（{{ selectedIds.length }}）
+          </el-button>
+        </el-col>
       </el-row>
     </el-card>
 
     <el-card shadow="never">
-      <el-table :data="documents" v-loading="loading" stripe row-key="id">
+      <el-table :data="documents" v-loading="loading" stripe row-key="id" @selection-change="handleSelectionChange">
+        <el-table-column type="selection" width="42" />
         <el-table-column prop="name" label="文件名" min-width="200">
           <template #default="{ row }">
             <div class="filename-cell">
@@ -106,7 +117,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, Search, Document, Film, Picture } from '@element-plus/icons-vue'
@@ -116,6 +127,7 @@ const router = useRouter()
 const loading = ref(false)
 const documents = ref([])
 const total = ref(0)
+const selectedRows = ref([])
 
 const query = reactive({ keyword: '', status: '', page: 1, page_size: 10 })
 
@@ -124,9 +136,11 @@ const statusTypeMap = {
   processed: 'success', failed: 'danger', deleted: 'info',
 }
 const statusLabelMap = {
-  uploading: '上传中', uploaded: '已上传', processing: '解析中',
+  uploading: '上传中', uploaded: '已上传', processing: '处理中',
   processed: '已完成', failed: '失败', deleted: '已删除',
 }
+
+const selectedIds = computed(() => selectedRows.value.map(item => item.id))
 
 function fileIcon(fileType) {
   if (!fileType) return 'Document'
@@ -158,6 +172,10 @@ async function loadDocuments() {
   } finally {
     loading.value = false
   }
+}
+
+function handleSelectionChange(rows) {
+  selectedRows.value = rows
 }
 
 function resetQuery() {
@@ -197,6 +215,22 @@ async function handleDelete(row) {
     loadDocuments()
   } catch {
     ElMessage.error('删除失败')
+  }
+}
+
+async function handleBatchDelete() {
+  if (selectedIds.value.length === 0) return
+  await ElMessageBox.confirm(`确认删除选中的 ${selectedIds.value.length} 个文档？`, '批量删除确认', { type: 'warning' })
+
+  const results = await Promise.allSettled(selectedIds.value.map(id => documentApi.delete(id)))
+  const successCount = results.filter(item => item.status === 'fulfilled').length
+
+  if (successCount > 0) {
+    ElMessage.success(`已删除 ${successCount} 个文档`)
+    loadDocuments()
+  }
+  if (successCount < selectedIds.value.length) {
+    ElMessage.warning(`有 ${selectedIds.value.length - successCount} 个文档删除失败`)
   }
 }
 

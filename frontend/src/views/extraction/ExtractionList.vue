@@ -28,14 +28,33 @@
           <el-button type="primary" :icon="Search" @click="loadTasks">搜索</el-button>
           <el-button @click="resetQuery">重置</el-button>
         </el-col>
-        <el-col :span="4" :offset="11" style="text-align:right">
+        <el-col :span="8" style="text-align:right">
+          <el-button
+            type="warning"
+            plain
+            :disabled="failedSelectedIds.length === 0"
+            @click="handleBatchRestart"
+          >
+            批量重启失败任务
+          </el-button>
+          <el-button
+            type="danger"
+            plain
+            :disabled="failedSelectedIds.length === 0"
+            @click="handleBatchDelete"
+          >
+            批量删除失败任务
+          </el-button>
+        </el-col>
+        <el-col :span="7" style="text-align:right">
           <el-button :icon="Refresh" circle @click="loadTasks" :loading="loading" />
         </el-col>
       </el-row>
     </el-card>
 
     <el-card shadow="never">
-      <el-table :data="tasks" v-loading="loading" stripe row-key="id" table-layout="fixed">
+      <el-table :data="tasks" v-loading="loading" stripe row-key="id" table-layout="fixed" @selection-change="handleSelectionChange">
+        <el-table-column type="selection" width="42" />
         <el-table-column prop="id" label="任务ID" width="90">
           <template #default="{ row }">
             <el-text class="mono" size="small">#{{ shortId(row.id) }}</el-text>
@@ -75,7 +94,7 @@
         <el-table-column prop="created_at" label="创建时间" width="170">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="140" align="center" fixed="right">
+        <el-table-column label="操作" width="240" align="center" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="row.status === 'completed'"
@@ -100,8 +119,27 @@
               size="small"
               text
               type="danger"
+              @click="router.push(`/extractions/${row.id}`)"
             >
               查看错误
+            </el-button>
+            <el-button
+              v-if="row.status === 'failed'"
+              size="small"
+              text
+              type="warning"
+              @click="handleRestart(row)"
+            >
+              重启
+            </el-button>
+            <el-button
+              v-if="row.status === 'failed'"
+              size="small"
+              text
+              type="danger"
+              @click="handleDelete(row)"
+            >
+              删除
             </el-button>
             <el-text v-if="!['completed', 'pending', 'queued', 'running', 'processing', 'failed'].includes(row.status)" type="info" size="small">
               -
@@ -126,9 +164,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh } from '@element-plus/icons-vue'
 import { extractionApi } from '@/api/index'
 
@@ -136,6 +174,7 @@ const router = useRouter()
 const loading = ref(false)
 const tasks = ref([])
 const total = ref(0)
+const selectedRows = ref([])
 const smoothProgressMap = ref({})
 let timer = null
 let smoothTimer = null
@@ -143,15 +182,17 @@ let smoothTimer = null
 const query = reactive({ status: '', page: 1, page_size: 10 })
 
 const statusTypeMap = {
-  pending: 'info', queued: 'info', running: 'warning', processing: 'warning',
+  pending: 'info', queued: 'info', running: 'warning', processing: 'warning', retrying: 'warning',
   completed: 'success', failed: 'danger', cancelled: 'info',
 }
 const statusLabelMap = {
-  pending: '待处理', queued: '排队中', running: '运行中', processing: '处理中',
+  pending: '待处理', queued: '排队中', running: '运行中', processing: '处理中', retrying: '重试中',
   completed: '已完成', failed: '失败', cancelled: '已取消',
 }
 const priorityTypeMap = { low: 'info', normal: '', high: 'warning', urgent: 'danger' }
 const priorityLabelMap = { low: '低', normal: '普通', high: '高', urgent: '紧急' }
+
+const failedSelectedIds = computed(() => selectedRows.value.filter(item => item.status === 'failed').map(item => item.id))
 
 function formatDate(str) {
   if (!str) return '-'
@@ -240,6 +281,58 @@ async function loadTasks() {
   }
 }
 
+function handleSelectionChange(rows) {
+  selectedRows.value = rows
+}
+
+async function handleRestart(row) {
+  await ElMessageBox.confirm('确认重启该失败任务？', '重启确认', { type: 'warning' })
+  try {
+    await extractionApi.restart(row.id)
+    ElMessage.success('任务已重启')
+    loadTasks()
+  } catch {
+    ElMessage.error('任务重启失败')
+  }
+}
+
+async function handleDelete(row) {
+  await ElMessageBox.confirm('确认删除该失败任务？删除后不可恢复。', '删除确认', { type: 'warning' })
+  try {
+    await extractionApi.delete(row.id)
+    ElMessage.success('任务已删除')
+    loadTasks()
+  } catch {
+    ElMessage.error('任务删除失败')
+  }
+}
+
+async function handleBatchRestart() {
+  if (failedSelectedIds.value.length === 0) return
+  await ElMessageBox.confirm(`确认重启选中的 ${failedSelectedIds.value.length} 个失败任务？`, '批量重启确认', { type: 'warning' })
+  try {
+    const res = await extractionApi.batchRestart(failedSelectedIds.value)
+    const successCount = res.data?.success_count ?? 0
+    ElMessage.success(`已重启 ${successCount} 个失败任务`)
+    loadTasks()
+  } catch {
+    ElMessage.error('批量重启失败')
+  }
+}
+
+async function handleBatchDelete() {
+  if (failedSelectedIds.value.length === 0) return
+  await ElMessageBox.confirm(`确认删除选中的 ${failedSelectedIds.value.length} 个失败任务？删除后不可恢复。`, '批量删除确认', { type: 'warning' })
+  try {
+    const res = await extractionApi.batchDelete(failedSelectedIds.value)
+    const successCount = res.data?.success_count ?? 0
+    ElMessage.success(`已删除 ${successCount} 个失败任务`)
+    loadTasks()
+  } catch {
+    ElMessage.error('批量删除失败')
+  }
+}
+
 function resetQuery() {
   query.status = ''
   query.page = 1
@@ -251,7 +344,7 @@ onMounted(() => {
   startSmoothTicker()
   // 每 10s 自动刷新正在运行的任务
   timer = setInterval(() => {
-    if (tasks.value.some(t => ['pending', 'running', 'processing', 'queued'].includes(t.status))) {
+    if (tasks.value.some(t => ['pending', 'running', 'processing', 'queued', 'retrying'].includes(t.status))) {
       loadTasks()
     }
   }, 10000)

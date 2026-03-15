@@ -7,7 +7,7 @@ import json
 from typing import Optional, List, Tuple, Dict, Any
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.orm import selectinload
 from app.models.extraction import (
     ExtractionTask, ExtractionResult, ExtractionField, ExtractionLog, TaskStatus, TaskPriority
@@ -668,6 +668,8 @@ class ExtractionService:
         result = await self.db.execute(
             select(ExtractionTask)
             .options(
+                selectinload(ExtractionTask.document),
+                selectinload(ExtractionTask.template),
                 selectinload(ExtractionTask.results),
                 selectinload(ExtractionTask.field_results),
             )
@@ -683,6 +685,54 @@ class ExtractionService:
 
         self._normalize_task_progress(task)
         return task
+
+    async def restart_failed_task(self, task_id: str) -> ExtractionTask:
+        task = await self.get_task_by_id(task_id)
+        if task.status != TaskStatus.FAILED:
+            raise ValidationException("仅失败任务可重启")
+
+        # 重启前清理历史执行痕迹，避免前端展示旧结果。
+        await self.db.execute(delete(ExtractionResult).where(ExtractionResult.task_id == task.id))
+        await self.db.execute(delete(ExtractionField).where(ExtractionField.task_id == task.id))
+        await self.db.execute(delete(ExtractionLog).where(ExtractionLog.task_id == task.id))
+
+        task.status = TaskStatus.RETRYING
+        task.progress = 0.0
+        task.progress_message = "任务重启中"
+        task.error_message = None
+        task.started_at = None
+        task.completed_at = None
+        task.token_used = None
+        task.processing_time_ms = None
+        task.retry_count = (task.retry_count or 0) + 1
+
+        try:
+            from app.tasks.extraction_tasks import run_extraction_task
+            celery_task = run_extraction_task.apply_async(
+                args=[task.id],
+                queue="extraction",
+                priority=self._priority_to_int(task.priority),
+            )
+            task.celery_task_id = celery_task.id
+            task.status = TaskStatus.QUEUED
+            task.progress_message = "任务已重新入队"
+        except Exception:
+            task.status = TaskStatus.PENDING
+            task.progress_message = "队列不可用，任务待调度"
+
+        await self.db.flush()
+        await self.db.commit()
+        await self.db.refresh(task, attribute_names=["created_at", "updated_at", "results", "field_results"])
+        return task
+
+    async def delete_failed_task(self, task_id: str):
+        task = await self.get_task_by_id(task_id)
+        if task.status != TaskStatus.FAILED:
+            raise ValidationException("仅失败任务可删除")
+
+        await self.db.delete(task)
+        await self.db.flush()
+        await self.db.commit()
 
     async def list_tasks(
         self,
