@@ -398,30 +398,7 @@ select {
   min-width: 0;
 }
 
-/* 固定操作列透明化：覆盖 Element Plus 默认的白色补丁和阴影 */
-.page-shell .el-table__fixed-right-patch,
-.page-shell th.el-table__fixed-right-patch,
-.page-shell td.el-table__fixed-right-patch,
-.page-shell .el-table-fixed-column--right,
-.page-shell th.el-table-fixed-column--right,
-.page-shell td.el-table-fixed-column--right {
-  background: transparent !important;
-  box-shadow: none !important;
-  border: none !important;
-}
-
-/* 单元格内容也保持透明，避免白色背景透出 */
-.page-shell .el-table-fixed-column--right .cell,
-.page-shell th.el-table-fixed-column--right .cell,
-.page-shell td.el-table-fixed-column--right .cell {
-  background: transparent !important;
-}
-
-/* 移除固定列在滚动时产生的内阴影遮罩 */
-.page-shell .el-table__header-wrapper tr th.el-table-fixed-column--right.is-last-column:before,
-.page-shell .el-table__body-wrapper tr td.el-table-fixed-column--right.is-last-column:before {
-  box-shadow: none !important;
-}
+/* （已移除）之前用于透明化固定操作列的覆盖样式已删除，操作列恢复与其他列相同的样式 */
 
 .brand-title {
   font-family: 'Bahnschrift', 'Segoe UI Variable Display', sans-serif;
