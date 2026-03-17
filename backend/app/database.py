@@ -3,8 +3,9 @@
 """
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import event
+from sqlalchemy import event, text
 from typing import AsyncGenerator
+import logging
 from app.config import settings
 
 
@@ -33,6 +34,9 @@ class Base(DeclarativeBase):
     pass
 
 
+logger = logging.getLogger("app")
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI 依赖注入 - 获取数据库会话"""
     async with AsyncSessionLocal() as session:
@@ -48,10 +52,33 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def create_tables():
     """创建所有数据库表（开发/测试环境使用，生产使用 Alembic）"""
-    async with engine.begin() as conn:
-        # 逐表创建并检查是否已存在，避免单表已存在时导致整批建表失败
-        for table in Base.metadata.sorted_tables:
-            await conn.run_sync(lambda c, t=table: t.create(c, checkfirst=True))
+    lock_name = "create_tables_lock"
+    async with engine.connect() as conn:
+        got_lock = False
+        try:
+            if conn.dialect.name == "mysql":
+                res = await conn.execute(
+                    text("SELECT GET_LOCK(:name, :timeout)"),
+                    {"name": lock_name, "timeout": 10},
+                )
+                got_lock = bool(res.scalar())
+                if not got_lock:
+                    logger.info("未获得建表锁，跳过 create_tables")
+                    return
+            else:
+                # 非 MySQL 环境不需要 GET_LOCK
+                got_lock = True
+
+            # 批量 checkfirst 建表，避免并发下按表逐个创建触发竞争
+            await conn.run_sync(lambda c: Base.metadata.create_all(bind=c, checkfirst=True))
+            await conn.commit()
+        finally:
+            if conn.dialect.name == "mysql" and got_lock:
+                try:
+                    await conn.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name})
+                    await conn.commit()
+                except Exception:
+                    pass
 
 
 async def drop_tables():

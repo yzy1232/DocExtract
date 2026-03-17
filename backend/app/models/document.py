@@ -5,6 +5,7 @@ from sqlalchemy import (
     Column, String, Boolean, Integer, DateTime, Text,
     ForeignKey, JSON, Enum, BigInteger, Float
 )
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -74,7 +75,11 @@ class DocumentPage(Base):
     document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     page_number = Column(Integer, nullable=False, comment="页码(从1开始)")
     # 页面内容
-    raw_text = Column(Text, nullable=True, comment="原始文本内容")
+    raw_text = Column(
+        Text().with_variant(mysql.LONGTEXT(), "mysql"),
+        nullable=True,
+        comment="原始文本内容",
+    )
     structured_content = Column(JSON, default=dict, comment="结构化内容(段落/表格/图片)")
     # 页面图像
     image_storage_path = Column(String(1024), nullable=True, comment="页面图像存储路径")

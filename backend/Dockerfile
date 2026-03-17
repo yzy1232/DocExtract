@@ -1,7 +1,12 @@
 FROM python:3.11-slim
 
-# 系统依赖（PyMuPDF 需要）
+# 避免 tzdata 安装交互提示，并设置默认时区为上海（可按需修改）
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+
+# 系统依赖（PyMuPDF 需要）。包含 tzdata 以提供 /usr/share/zoneinfo
 RUN apt-get update && apt-get install -y \
+    tzdata \
     libmupdf-dev \
     mupdf-tools \
     tesseract-ocr \
@@ -11,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     curl \
     ca-certificates \
+    && ln -sf /usr/share/zoneinfo/$TZ /etc/localtime \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

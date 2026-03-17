@@ -147,6 +147,9 @@ class Settings(BaseSettings):
     # ========================
     MAX_UPLOAD_SIZE: int = 100 * 1024 * 1024  # 100MB
     MAX_BATCH_SIZE: int = 50                  # 单次批量上传最大文件数
+    MAX_DB_PAGE_RAW_TEXT_BYTES: int = 512 * 1024
+    MAX_DB_STRUCTURED_CONTENT_BYTES: int = 256 * 1024
+    MAX_DB_PAGE_RAW_TEXT_PREVIEW_CHARS: int = 4000
     ALLOWED_MIME_TYPES: List[str] = [
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

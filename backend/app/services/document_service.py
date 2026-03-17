@@ -4,6 +4,7 @@
 import uuid
 import os
 import logging
+import json
 from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
@@ -24,6 +25,68 @@ logger = logging.getLogger(__name__)
 class DocumentService:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    def _build_page_storage_payload(self, document_id: str, page) -> Tuple[Optional[str], dict]:
+        raw_text = page.raw_text or ""
+        structured_content = {
+            "tables": page.tables or [],
+            "images": page.images or [],
+        }
+
+        storage_meta = {}
+
+        raw_text_bytes = raw_text.encode("utf-8") if raw_text else b""
+        if raw_text_bytes and len(raw_text_bytes) > settings.MAX_DB_PAGE_RAW_TEXT_BYTES:
+            raw_text_key = (
+                f"documents/{document_id}/pages/page_{page.page_number:04d}_raw.txt"
+            )
+            storage.upload_bytes(
+                settings.STORAGE_BUCKET_DOCUMENTS,
+                raw_text_key,
+                raw_text_bytes,
+                "text/plain; charset=utf-8",
+            )
+            storage_meta["raw_text"] = {
+                "externalized": True,
+                "bucket": settings.STORAGE_BUCKET_DOCUMENTS,
+                "key": raw_text_key,
+                "size_bytes": len(raw_text_bytes),
+            }
+            raw_text = raw_text[: settings.MAX_DB_PAGE_RAW_TEXT_PREVIEW_CHARS]
+
+        structured_bytes = json.dumps(
+            structured_content,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        if len(structured_bytes) > settings.MAX_DB_STRUCTURED_CONTENT_BYTES:
+            structured_key = (
+                f"documents/{document_id}/pages/page_{page.page_number:04d}_structured.json"
+            )
+            storage.upload_bytes(
+                settings.STORAGE_BUCKET_DOCUMENTS,
+                structured_key,
+                structured_bytes,
+                "application/json",
+            )
+            storage_meta["structured_content"] = {
+                "externalized": True,
+                "bucket": settings.STORAGE_BUCKET_DOCUMENTS,
+                "key": structured_key,
+                "size_bytes": len(structured_bytes),
+            }
+            structured_content = {
+                "tables": [],
+                "images": [],
+                "tables_count": len(page.tables or []),
+                "images_count": len(page.images or []),
+            }
+
+        if storage_meta:
+            structured_content["_storage"] = storage_meta
+
+        return raw_text, structured_content
 
     async def upload(
         self,
@@ -150,12 +213,16 @@ class DocumentService:
 
             # 保存页面数据
             for page in parse_result.pages:
+                db_raw_text, db_structured_content = self._build_page_storage_payload(
+                    document.id,
+                    page,
+                )
                 doc_page = DocumentPage(
                     id=str(uuid.uuid4()),
                     document_id=document.id,
                     page_number=page.page_number,
-                    raw_text=page.raw_text,
-                    structured_content={"tables": page.tables, "images": page.images},
+                    raw_text=db_raw_text,
+                    structured_content=db_structured_content,
                     has_table=page.has_table,
                     has_image=page.has_image,
                     is_scanned=page.is_scanned,
