@@ -23,6 +23,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# 兼容历史库中 raw_text 仍为 TEXT（约 64KB）场景，避免写入超长文本导致 DataError。
+_DB_RAW_TEXT_SAFE_BYTES = 60 * 1024
+
 
 class DocumentService:
     def __init__(self, db: AsyncSession):
@@ -69,7 +72,8 @@ class DocumentService:
         storage_meta = {}
 
         raw_text_bytes = raw_text.encode("utf-8") if raw_text else b""
-        if raw_text_bytes and len(raw_text_bytes) > settings.MAX_DB_PAGE_RAW_TEXT_BYTES:
+        effective_raw_text_limit = min(settings.MAX_DB_PAGE_RAW_TEXT_BYTES, _DB_RAW_TEXT_SAFE_BYTES)
+        if raw_text_bytes and len(raw_text_bytes) > effective_raw_text_limit:
             raw_text_key = (
                 f"documents/{document_id}/pages/page_{page.page_number:04d}_raw.txt"
             )
