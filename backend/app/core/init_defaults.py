@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import logging
 
 from sqlalchemy import select
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from app.database import AsyncSessionLocal
 from app.models.user import User, Role, UserStatus
@@ -23,6 +24,17 @@ async def ensure_default_roles_and_admin() -> None:
         return
 
     async with AsyncSessionLocal() as session:
+        # 使用 MySQL 的 GET_LOCK 进行进程间互斥，避免多个 worker/重载进程同时进行初始化
+        lock_name = "init_defaults_lock"
+        try:
+            res = await session.execute(text("SELECT GET_LOCK(:name, :timeout)"), {"name": lock_name, "timeout": 10})
+            got = res.scalar()
+        except Exception:
+            got = None
+
+        if not got:
+            logger.info("未获得初始化锁（可能另一个实例正在初始化），跳过创建默认角色与管理员")
+            return
         # 创建默认角色（admin, user） — 使用 try/except 防止并发时的唯一约束冲突
         try:
             result = await session.execute(select(Role).where(Role.name == 'admin'))
@@ -112,6 +124,12 @@ async def ensure_default_roles_and_admin() -> None:
                 await session.rollback()
                 logger.warning(f"默认数据初始化失败: {e}")
                 return
+            finally:
+            # 释放锁
+                try:
+                    await session.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name})
+                except Exception:
+                    pass
 
 
 async def ensure_default_llm_system_config() -> None:
@@ -123,6 +141,18 @@ async def ensure_default_llm_system_config() -> None:
         return
 
     async with AsyncSessionLocal() as session:
+        # 使用数据库锁避免并发创建冲突 / 死锁
+        lock_name = "init_defaults_lock"
+        try:
+            res = await session.execute(text("SELECT GET_LOCK(:name, :timeout)"), {"name": lock_name, "timeout": 10})
+            got = res.scalar()
+        except Exception:
+            got = None
+
+        if not got:
+            logger.info("未获得初始化锁（可能另一个实例正在初始化），跳过创建 default_llm_config_id")
+            return
+
         try:
             result = await session.execute(select(SystemConfig).where(SystemConfig.key == 'default_llm_config_id'))
             sc = result.scalar_one_or_none()
@@ -148,3 +178,8 @@ async def ensure_default_llm_system_config() -> None:
         except Exception as e:
             await session.rollback()
             logger.warning(f"创建 default_llm_config_id 失败: {e}")
+        finally:
+            try:
+                await session.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name})
+            except Exception:
+                pass
