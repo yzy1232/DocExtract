@@ -5,6 +5,8 @@ import uuid
 import os
 import logging
 import json
+import io
+import zipfile
 from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
@@ -12,7 +14,7 @@ from app.models.document import Document, DocumentPage, DocumentMetadata, Docume
 from app.schemas.extraction import DocumentUpdate
 from app.core.storage import storage
 from app.core.exceptions import (
-    NotFoundException, FileTooLargeException, UnsupportedFileTypeException, StorageException
+    NotFoundException, FileTooLargeException, UnsupportedFileTypeException, StorageException, ValidationException
 )
 from app.processors.factory import get_processor, get_document_format, suggest_tags
 from app.processors.mime_resolver import normalize_mime_type
@@ -25,6 +27,37 @@ logger = logging.getLogger(__name__)
 class DocumentService:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    def _validate_document_payload(self, file_content: bytes, mime_type: str):
+        """上传前做轻量结构校验，避免伪装文件进入解析队列。"""
+        if mime_type == "application/pdf":
+            if not file_content.startswith(b"%PDF-"):
+                raise ValidationException("文件内容不是有效PDF，请确认文件未损坏")
+            return
+
+        if mime_type in {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }:
+            stream = io.BytesIO(file_content)
+            if not zipfile.is_zipfile(stream):
+                raise ValidationException("文件内容不是有效Office文档，请重新导出后上传")
+
+            stream.seek(0)
+            with zipfile.ZipFile(stream) as zf:
+                names = set(zf.namelist())
+                required_entry = (
+                    "word/document.xml"
+                    if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    else "xl/workbook.xml"
+                )
+                if required_entry not in names:
+                    raise ValidationException("文件结构不完整，请确认上传的是标准文档文件")
+            return
+
+        if mime_type.startswith("text/"):
+            if b"\x00" in file_content[:4096]:
+                raise ValidationException("文本文件包含二进制内容，请确认文件类型")
 
     def _build_page_storage_payload(self, document_id: str, page) -> Tuple[Optional[str], dict]:
         raw_text = page.raw_text or ""
@@ -108,6 +141,7 @@ class DocumentService:
             raise UnsupportedFileTypeException(normalized_mime_type)
         if not get_processor(normalized_mime_type):
             raise UnsupportedFileTypeException(normalized_mime_type)
+        self._validate_document_payload(file_content, normalized_mime_type)
 
         file_hash = storage.calculate_sha256(file_content)
         doc_format = get_document_format(normalized_mime_type, filename=filename)
@@ -119,7 +153,6 @@ class DocumentService:
         # 上传到对象存储
         try:
             storage_key = storage.build_document_key(doc_id, filename)
-            import io
             storage.upload_file(
                 bucket=settings.STORAGE_BUCKET_DOCUMENTS,
                 object_name=storage_key,
@@ -153,14 +186,6 @@ class DocumentService:
         await self.db.flush()
         # 立即回填 server_default 字段，避免响应序列化时触发异步懒加载
         await self.db.refresh(document)
-
-        # 触发异步解析任务（对于已标记为 PROCESSED 的文本文件，后台仍会解析并回写，但上传接口不需等待）
-        try:
-            from app.tasks.document_tasks import parse_document_task
-            parse_document_task.delay(doc_id)
-        except Exception:
-            logger.warning("触发文档解析任务失败，已忽略: document_id=%s", doc_id, exc_info=True)
-            pass
 
         return document
 
@@ -210,6 +235,7 @@ class DocumentService:
             document.has_ocr = parse_result.has_ocr
             document.parsed_text_preview = parse_result.full_text[:500] if parse_result.full_text else None
             document.status = DocumentStatus.PROCESSED
+            document.parsing_error = None
 
             # 保存页面数据
             for page in parse_result.pages:
@@ -241,6 +267,12 @@ class DocumentService:
                 self.db.add(meta)
 
         except Exception as e:
+            logger.exception(
+                "文档解析失败: document_id=%s name=%s mime_type=%s",
+                document.id,
+                document.name,
+                document.mime_type,
+            )
             document.status = DocumentStatus.FAILED
             document.parsing_error = str(e)
 

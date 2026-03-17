@@ -16,9 +16,11 @@ from app.processors.mime_resolver import normalize_mime_type
 from fastapi.responses import StreamingResponse
 import io
 import asyncio
+import logging
 from urllib.parse import quote
 
 router = APIRouter(prefix="/documents", tags=["文档管理"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/upload", response_model=ResponseBase[DocumentOut], summary="上传单个文档")
@@ -48,6 +50,15 @@ async def upload_document(
         owner_id=current_user.id,
         tags=tag_list,
     )
+
+    # 先提交事务，再投递解析任务，避免 worker 读取不到未提交文档。
+    await db.commit()
+    try:
+        from app.tasks.document_tasks import parse_document_task
+        parse_document_task.delay(document.id)
+    except Exception:
+        logger.warning("触发文档解析任务失败，已忽略: document_id=%s", document.id, exc_info=True)
+
     return ResponseBase(data=DocumentOut.model_validate(document))
 
 
@@ -62,6 +73,7 @@ async def batch_upload(
 
     svc = DocumentService(db)
     results = []
+    document_ids = []
     for f in files:
         import os
         safe_filename = os.path.basename(f.filename or "unknown")
@@ -73,7 +85,18 @@ async def batch_upload(
             mime_type=mime_type,
             owner_id=current_user.id,
         )
+        document_ids.append(doc.id)
         results.append(DocumentOut.model_validate(doc))
+
+    # 批量上传先统一提交，再批量投递任务，避免触发时序导致的文档不存在重试。
+    await db.commit()
+    from app.tasks.document_tasks import parse_document_task
+    for document_id in document_ids:
+        try:
+            parse_document_task.delay(document_id)
+        except Exception:
+            logger.warning("触发文档解析任务失败，已忽略: document_id=%s", document_id, exc_info=True)
+
     return ResponseBase(data=results)
 
 
