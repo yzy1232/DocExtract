@@ -89,7 +89,7 @@ export const extractionApi = {
   batchDelete: (taskIds) => request.post('/extractions/batch-delete', { task_ids: taskIds }),
 
   // 获取提取结果
-  getResults: (id) => request.get(`/extractions/${id}/results`),
+  getResults: (id, params) => request.get(`/extractions/${id}/results`, { params }),
 
   // 验证结果
   validate: (id, data) => request.put(`/extractions/${id}/validation`, data),

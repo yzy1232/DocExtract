@@ -19,6 +19,57 @@ from app.core.exceptions import ForbiddenException
 router = APIRouter(prefix="/extractions", tags=["提取任务"])
 
 
+def _to_list_value(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _build_paginated_structured_result(structured_result, page: int, page_size: int):
+    """将 structured_result 转为按行分页结果，避免一次返回超大载荷。"""
+    if not isinstance(structured_result, dict) or not structured_result:
+        return {
+            "columns": [],
+            "rows": [],
+            "pagination": {
+                "page": 1,
+                "page_size": page_size,
+                "total_rows": 0,
+                "total_pages": 1,
+            },
+        }
+
+    field_names = list(structured_result.keys())
+    value_map = {name: _to_list_value(structured_result.get(name)) for name in field_names}
+    total_rows = max((len(v) for v in value_map.values()), default=0)
+    total_pages = max(1, (total_rows + page_size - 1) // page_size) if total_rows > 0 else 1
+    safe_page = min(max(1, page), total_pages)
+
+    start = (safe_page - 1) * page_size
+    end = min(start + page_size, total_rows)
+
+    rows = []
+    for row_idx in range(start, end):
+        row_data = {}
+        for field_name in field_names:
+            values = value_map[field_name]
+            row_data[field_name] = values[row_idx] if row_idx < len(values) else None
+        rows.append(row_data)
+
+    return {
+        "columns": [{"field_name": n, "field_label": n} for n in field_names],
+        "rows": rows,
+        "pagination": {
+            "page": safe_page,
+            "page_size": page_size,
+            "total_rows": total_rows,
+            "total_pages": total_pages,
+        },
+    }
+
+
 @router.post("", response_model=ResponseBase[ExtractionTaskOut], summary="创建提取任务")
 async def create_extraction(
     data: ExtractionCreate,
@@ -171,6 +222,9 @@ async def batch_delete_failed_extractions(
 @router.get("/{task_id}/results", response_model=ResponseBase[ExtractionResultOut], summary="获取提取结果")
 async def get_extraction_results(
     task_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+    paged: bool = Query(default=True),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -192,7 +246,10 @@ async def get_extraction_results(
             return ResponseBase(data=ExtractionResultOut(
                 id=f"pending-{task_id}",
                 task_id=task_id,
-                structured_result={},
+                structured_result=(
+                    _build_paginated_structured_result({}, page, page_size)
+                    if paged else {}
+                ),
                 overall_confidence=None,
                 validation_status="pending",
                 validation_notes=None,
@@ -201,7 +258,26 @@ async def get_extraction_results(
                 updated_at=task.updated_at,
             ))
         raise NotFoundException("提取结果", task_id)
-    return ResponseBase(data=ExtractionResultOut.model_validate(er))
+
+    if not paged:
+        return ResponseBase(data=ExtractionResultOut.model_validate(er))
+
+    paged_structured_result = _build_paginated_structured_result(
+        er.structured_result,
+        page,
+        page_size,
+    )
+    return ResponseBase(data=ExtractionResultOut(
+        id=er.id,
+        task_id=er.task_id,
+        structured_result=paged_structured_result,
+        overall_confidence=er.overall_confidence,
+        validation_status=er.validation_status,
+        validation_notes=er.validation_notes,
+        export_url=er.export_url,
+        created_at=er.created_at,
+        updated_at=er.updated_at,
+    ))
 
 
 @router.put("/{task_id}/validation", response_model=ResponseBase[ExtractionResultOut], summary="验证提取结果")

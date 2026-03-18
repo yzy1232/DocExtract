@@ -62,6 +62,9 @@
               <span>{{ task.status === 'completed' ? '提取结果' : '分块结果预览' }}</span>
               <el-tag size="small" type="info">{{ matrixColumns.length }} 个字段</el-tag>
               <el-tag size="small" type="success">{{ matrixRows.length }} 条记录</el-tag>
+              <el-tag size="small" type="warning" v-if="pagination.totalRows > pagination.pageSize">
+                已分页展示
+              </el-tag>
               <el-tag v-if="task.status !== 'completed'" size="small" type="warning">处理中</el-tag>
             </div>
           </template>
@@ -81,6 +84,19 @@
           </el-table>
 
           <el-empty v-else description="暂无可展示的结构化字段" />
+
+          <div v-if="pagination.totalRows > 0" style="margin-top:12px;display:flex;justify-content:flex-end;">
+            <el-pagination
+              background
+              layout="total, sizes, prev, pager, next"
+              :total="pagination.totalRows"
+              :current-page="pagination.page"
+              :page-size="pagination.pageSize"
+              :page-sizes="[50, 100, 200, 500]"
+              @current-change="handlePageChange"
+              @size-change="handlePageSizeChange"
+            />
+          </div>
         </el-card>
       </el-col>
     </el-row>
@@ -100,6 +116,12 @@ const loading = ref(false)
 const task = ref({})
 const fieldResults = ref([])
 const smoothProgress = ref(0)
+const pagination = ref({
+  page: 1,
+  pageSize: 100,
+  totalRows: 0,
+  totalPages: 1,
+})
 let pollTimer = null
 let smoothTimer = null
 
@@ -206,17 +228,44 @@ async function loadTask() {
 
     let previewRows = []
     try {
-      const rRes = await extractionApi.getResults(route.params.id)
+      const rRes = await extractionApi.getResults(route.params.id, {
+        paged: true,
+        page: pagination.value.page,
+        page_size: pagination.value.pageSize,
+      })
       const resultData = rRes.data || {}
-      previewRows = resultData.structured_result && typeof resultData.structured_result === 'object'
-        ? Object.entries(resultData.structured_result).map(([key, value]) => ({
+      const structured = resultData.structured_result || {}
+      if (Array.isArray(structured.columns) && Array.isArray(structured.rows)) {
+        const p = structured.pagination || {}
+        pagination.value = {
+          page: Number(p.page) || pagination.value.page,
+          pageSize: Number(p.page_size) || pagination.value.pageSize,
+          totalRows: Number(p.total_rows) || 0,
+          totalPages: Number(p.total_pages) || 1,
+        }
+
+        previewRows = (structured.columns || []).map((col) => {
+          const key = col.field_name || col.field_label
+          return {
             field_name: key,
-            field_label: key,
-            value,
+            field_label: col.field_label || key,
+            value: (structured.rows || []).map((r) => (r ? r[key] : null)),
             confidence: null,
             is_valid: null,
-          }))
-        : []
+          }
+        })
+      } else {
+        // 兼容旧版结构
+        previewRows = structured && typeof structured === 'object'
+          ? Object.entries(structured).map(([key, value]) => ({
+              field_name: key,
+              field_label: key,
+              value,
+              confidence: null,
+              is_valid: null,
+            }))
+          : []
+      }
     } catch {
       previewRows = []
     }
@@ -238,6 +287,17 @@ async function refreshTask() {
   } finally {
     loading.value = false
   }
+}
+
+async function handlePageChange(page) {
+  pagination.value.page = page
+  await refreshTask()
+}
+
+async function handlePageSizeChange(size) {
+  pagination.value.pageSize = size
+  pagination.value.page = 1
+  await refreshTask()
 }
 
 async function exportResult(format) {

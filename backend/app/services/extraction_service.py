@@ -4,6 +4,7 @@
 import uuid
 import time
 import json
+import re
 import logging
 from typing import Optional, List, Tuple, Dict, Any
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ EXTRACTION_CROSS_VALIDATE_ROUNDS = 2
 EXTRACTION_MIN_AGREEMENT = 2
 EXTRACTION_STALE_TIMEOUT_SECONDS = 300
 LLM_IO_LOG_MAX_CHARS = 8000
+EXCEL_FIELD_SAMPLE_LIMIT = 60
 
 
 logger = logging.getLogger(__name__)
@@ -99,6 +101,89 @@ class ExtractionService:
         if not text:
             text = f"column_{col_idx + 1}"
         return text[:64]
+
+    def _looks_like_numeric_or_date(self, value: str) -> bool:
+        text = (value or "").strip()
+        if not text:
+            return False
+        if re.match(r"^-?\d+(\.\d+)?$", text.replace(",", "")):
+            return True
+        if re.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$", text):
+            return True
+        if re.match(r"^\d{1,2}:\d{2}(:\d{2})?$", text):
+            return True
+        return False
+
+    def _detect_excel_header_row_rule_based(self, sample_rows: List[List[str]]) -> Dict[str, Any]:
+        """规则识别表头行，不依赖 LLM。"""
+        if not sample_rows:
+            return {
+                "header_row_index": 1,
+                "confidence": 0.5,
+                "headers": [],
+                "reason": "无可用样本，默认首行为表头",
+            }
+
+        best_idx = 1
+        best_score = float("-inf")
+        second_score = float("-inf")
+
+        for idx, row in enumerate(sample_rows, start=1):
+            cells = [str(c).strip() if c is not None else "" for c in row]
+            non_empty = [c for c in cells if c]
+            if not non_empty:
+                score = -100.0
+            else:
+                non_empty_count = len(non_empty)
+                numeric_like = sum(1 for c in non_empty if self._looks_like_numeric_or_date(c))
+                text_like = sum(1 for c in non_empty if not self._looks_like_numeric_or_date(c))
+                unique_ratio = len(set(non_empty)) / max(1, non_empty_count)
+
+                score = (
+                    non_empty_count * 1.2
+                    + text_like * 1.5
+                    - numeric_like * 0.9
+                    + unique_ratio
+                )
+                if idx == 1:
+                    score += 0.4
+
+            if score > best_score:
+                second_score = best_score
+                best_score = score
+                best_idx = idx
+            elif score > second_score:
+                second_score = score
+
+        margin = best_score - second_score if second_score != float("-inf") else 1.0
+        confidence = max(0.6, min(0.99, 0.7 + margin * 0.05))
+        best_headers = sample_rows[best_idx - 1] if best_idx - 1 < len(sample_rows) else []
+
+        return {
+            "header_row_index": best_idx,
+            "confidence": round(confidence, 4),
+            "headers": [str(x).strip() for x in best_headers],
+            "reason": "rule_based_header_detection",
+        }
+
+    def _build_excel_field_storage_value(self, values: List[Any]) -> Tuple[Optional[str], Optional[str]]:
+        """为字段级明细存储构建摘要，避免超长写入 DB。"""
+        if not values:
+            return None, None
+
+        sample = values[:EXCEL_FIELD_SAMPLE_LIMIT]
+        payload = {
+            "count": len(values),
+            "sample": sample,
+        }
+        raw_value = json.dumps(payload, ensure_ascii=False)
+
+        normalized_payload = {
+            "count": len(values),
+            "sample": sample[:10],
+        }
+        normalized_value = json.dumps(normalized_payload, ensure_ascii=False)
+        return raw_value, normalized_value
 
     def _collect_excel_sheet_rows(self, parse_result) -> List[Dict[str, Any]]:
         """从解析结果中收集每个sheet的二维行数据。"""
@@ -220,14 +305,12 @@ class ExtractionService:
         task_id: str,
         parse_result,
     ) -> Tuple[Dict[str, Any], Dict[str, Any], float, int]:
-        """Excel 专用提取流程：前5行识别表头并直接落库。"""
+        """Excel 专用提取流程：规则识别表头并直接落库（不调用LLM）。"""
         await self._checkpoint_progress(task, 40.0, "Excel表头识别中...")
 
         sheets = self._collect_excel_sheet_rows(parse_result)
         if not sheets:
             raise ValidationException("Excel解析结果为空，未识别到有效数据行")
-
-        adapter, llm_config = await self._resolve_task_adapter_and_config(task)
 
         structured_result: Dict[str, Any] = {}
         raw_sheet_results: List[Dict[str, Any]] = []
@@ -238,13 +321,7 @@ class ExtractionService:
             all_rows = sheet["rows"]
             sample_rows = all_rows[:5]
 
-            infer_result = await self._detect_excel_header_row(
-                adapter,
-                llm_config,
-                sheet_name=sheet["sheet_name"],
-                sample_rows=sample_rows,
-            )
-            total_tokens += int(infer_result.get("_token_used") or 0)
+            infer_result = self._detect_excel_header_row_rule_based(sample_rows)
 
             header_row_index = infer_result.get("header_row_index")
             try:
@@ -264,19 +341,21 @@ class ExtractionService:
                     merged_key = f"{sheet['sheet_name']}:{key}"[:64]
                 structured_result[merged_key] = value
 
+                raw_value, normalized_value = self._build_excel_field_storage_value(value if isinstance(value, list) else [])
+
                 ef = ExtractionField(
                     id=str(uuid.uuid4()),
                     task_id=task_id,
                     field_id=None,
                     field_name=merged_key,
-                    raw_value=json.dumps(value, ensure_ascii=False) if value is not None else None,
-                    normalized_value=json.dumps(value, ensure_ascii=False) if value is not None else None,
-                    value_type="list",
+                    raw_value=raw_value,
+                    normalized_value=normalized_value,
+                    value_type="list_summary",
                     confidence=confidence,
                     is_valid=True,
                     validation_error=None,
-                    source_text=f"sheet={sheet['sheet_name']}; header_row={header_row_index}",
-                    extraction_method="excel_header_llm",
+                    source_text=f"sheet={sheet['sheet_name']}; header_row={header_row_index}; value_count={len(value) if isinstance(value, list) else 0}",
+                    extraction_method="excel_rule_based",
                 )
                 self.db.add(ef)
 
@@ -301,9 +380,9 @@ class ExtractionService:
 
         return {
             "stage": "completed",
-            "mode": "excel_header_row_detection",
+            "mode": "excel_rule_based_header_detection",
             "sheets": raw_sheet_results,
-            "note": "Excel仅进行前5行表头识别并直接入库，未执行全文LLM字段抽取",
+            "note": "Excel使用规则进行表头识别并直接入库，未调用LLM",
         }, structured_result, overall_confidence, total_tokens
 
     def _finalize_merged_result(self, merged: Dict[str, Any], field_names: List[str]) -> Dict[str, Any]:
