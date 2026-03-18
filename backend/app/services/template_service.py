@@ -303,6 +303,17 @@ class TemplateService:
         inferred_name = (template_name or "").strip() or self._default_template_name(document.name)
         inferred_desc = (description or "").strip() or f"基于文档《{document.display_name or document.name}》自动生成"
 
+        # Excel 优先使用真实表头做确定性推断，避免LLM异常时退化为固定兜底字段。
+        is_excel_doc = mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if is_excel_doc:
+            excel_fields = self._infer_fields_from_excel_tables(parse_result, max_fields)
+            if excel_fields:
+                return {
+                    "name": inferred_name,
+                    "description": inferred_desc,
+                    "fields": excel_fields,
+                }
+
         try:
             adapter, llm_config = await self._resolve_infer_adapter_and_config()
             llm_config.temperature = 0.1
@@ -556,3 +567,105 @@ class TemplateService:
                 }
             )
         return fields
+
+    def _infer_fields_from_excel_tables(self, parse_result, max_fields: int) -> List[Dict[str, Any]]:
+        """从 Excel 解析结果中直接提取表头并推断字段类型。"""
+        if max_fields <= 0:
+            return []
+
+        header_samples: List[Tuple[str, List[Any]]] = []
+        seen_headers = set()
+
+        for page in parse_result.pages or []:
+            table = (page.tables or [None])[0]
+            if not isinstance(table, dict):
+                continue
+
+            headers = table.get("headers") if isinstance(table.get("headers"), list) else []
+            rows = table.get("rows") if isinstance(table.get("rows"), list) else []
+            if not headers:
+                continue
+
+            col_count = max(len(headers), max((len(r) for r in rows), default=0))
+            for col_idx in range(col_count):
+                raw_header = headers[col_idx] if col_idx < len(headers) else ""
+                header = str(raw_header).strip() if raw_header is not None else ""
+                if not header:
+                    continue
+
+                # 跳过明显占位字段名
+                if re.match(r"^column_\d+$", header, flags=re.IGNORECASE):
+                    continue
+
+                header_key = header.lower()
+                if header_key in seen_headers:
+                    continue
+                seen_headers.add(header_key)
+
+                samples = []
+                for row in rows[:60]:
+                    if not isinstance(row, list) or col_idx >= len(row):
+                        continue
+                    value = row[col_idx]
+                    if value in (None, ""):
+                        continue
+                    samples.append(value)
+
+                header_samples.append((header, samples))
+                if len(header_samples) >= max_fields:
+                    break
+
+            if len(header_samples) >= max_fields:
+                break
+
+        if not header_samples:
+            return []
+
+        fields: List[Dict[str, Any]] = []
+        used_names = set()
+        for idx, (display_name, samples) in enumerate(header_samples):
+            key = self._deduplicate_name(self._normalize_field_name(display_name, idx + 1), used_names)
+            used_names.add(key)
+            field_type = self._infer_field_type_from_header_and_samples(display_name, samples)
+
+            fields.append(
+                {
+                    "name": key,
+                    "display_name": display_name[:128],
+                    "field_type": field_type,
+                    "description": f"从Excel表头提取{display_name}",
+                    "required": False,
+                    "extraction_hints": None,
+                    "sort_order": idx,
+                }
+            )
+
+        return fields
+
+    def _infer_field_type_from_header_and_samples(self, header: str, samples: List[Any]) -> str:
+        """基于表头语义和样本值推断字段类型。"""
+        header_l = (header or "").strip().lower()
+
+        if any(k in header_l for k in ["date", "time", "日期", "时间"]):
+            return FieldType.DATE.value
+        if any(k in header_l for k in ["amount", "price", "total", "qty", "count", "num", "金额", "价格", "数量", "总计"]):
+            return FieldType.NUMBER.value
+
+        non_empty = [str(v).strip() for v in samples if v not in (None, "")]
+        if not non_empty:
+            return FieldType.TEXT.value
+
+        num_count = 0
+        date_count = 0
+        for v in non_empty:
+            if re.match(r"^-?\d+(\.\d+)?$", v.replace(",", "")):
+                num_count += 1
+            if re.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}", v):
+                date_count += 1
+
+        total = len(non_empty)
+        if date_count / total >= 0.6:
+            return FieldType.DATE.value
+        if num_count / total >= 0.7:
+            return FieldType.NUMBER.value
+        return FieldType.TEXT.value

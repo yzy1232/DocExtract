@@ -568,7 +568,15 @@ class ExtractionService:
 
             await self._checkpoint_progress(task, 30.0, "文档解析完成")
 
-            is_excel_doc = normalized_mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            logger.info(
+                "Excel detection params: normalized_mime=%s, document_name=%s",
+                normalized_mime,
+                document.name,
+            )
+            is_excel_doc = (
+                normalized_mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" or
+                (document.name and document.name.lower().endswith(".xlsx"))
+            )
 
             result_row_query = await self.db.execute(
                 select(ExtractionResult).where(ExtractionResult.task_id == task_id)
@@ -756,7 +764,40 @@ class ExtractionService:
                 parsed_chunks,
                 [f.name for f in template.fields],
             )
-            parsed = self._finalize_merged_result(parsed, [f.name for f in template.fields])
+            field_names = [f.name for f in template.fields]
+            parsed = self._finalize_merged_result(parsed, field_names)
+
+            # 纠偏：若聚合结果实质为空，则用强化提示再做一次全量提取。
+            if self._is_effectively_empty_result(parsed, field_names):
+                await self._log(task_id, "warning", "extraction_empty_retry", "检测到提取结果为空，触发强化提示重试")
+                retry_document_content = (
+                    f"{document_content}\n\n"
+                    "[质量纠偏指令]\n"
+                    "上一轮结果过空。请再次提取，优先输出文档中明确可定位的字段值；"
+                    "仅当文档确实不存在对应信息时才返回 null。"
+                )
+                retry_messages = self.prompt_engine.build_extraction_messages(
+                    document_content=retry_document_content,
+                    template_fields=fields_data,
+                    system_prompt=template.system_prompt,
+                    extraction_prompt_template=template.extraction_prompt_template,
+                    few_shot_examples=template.few_shot_examples,
+                )
+                retry_response = await adapter.chat(retry_messages, llm_config)
+                total_tokens += retry_response.total_tokens or 0
+
+                logger.info(
+                    "llm_retry_output task_id=%s model=%s tokens=%s content=%s",
+                    task_id,
+                    llm_config.model,
+                    retry_response.total_tokens,
+                    self._truncate_log_text(retry_response.content),
+                )
+
+                retry_parsed = self.prompt_engine.parse_llm_response(retry_response.content)
+                merged_retry = self._merge_chunk_parsed_results([parsed, retry_parsed], field_names)
+                parsed = self._finalize_merged_result(merged_retry, field_names)
+
             extracted_fields = parsed.get("fields", {})
             records = parsed.get("records", [])
             records = records if isinstance(records, list) else []
@@ -1076,6 +1117,35 @@ class ExtractionService:
         existing = {self._stable_dump(v) for v in values}
         if value_key not in existing:
             values.append(value)
+
+    def _is_effectively_empty_result(self, parsed: Dict[str, Any], field_names: List[str]) -> bool:
+        """判断结果是否实质为空：fields 与 records 都没有有效值。"""
+        if not isinstance(parsed, dict):
+            return True
+
+        fields = parsed.get("fields", {})
+        if isinstance(fields, dict):
+            for field_name in field_names:
+                field_obj = fields.get(field_name, {})
+                if not isinstance(field_obj, dict):
+                    continue
+                value = field_obj.get("value")
+                if isinstance(value, list):
+                    if any(v not in (None, "") for v in value):
+                        return False
+                elif value not in (None, ""):
+                    return False
+
+        records = parsed.get("records", [])
+        if isinstance(records, list):
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                for field_name in field_names:
+                    if record.get(field_name) not in (None, ""):
+                        return False
+
+        return True
 
     def _normalize_value(self, value: Any, field_type) -> Any:
         """标准化字段值"""

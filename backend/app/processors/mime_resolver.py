@@ -31,6 +31,10 @@ MIME_ALIASES: dict[str, str] = {
     "application/acrobat": "application/pdf",
     "application/msword": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.ms-excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/x-excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/x-xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/x-markdown": "text/markdown",
     "application/octet-stream": "application/octet-stream",
 }
