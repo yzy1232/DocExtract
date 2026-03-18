@@ -64,6 +64,68 @@
           </el-form-item>
         </el-form>
       </el-tab-pane>
+
+      <!-- 账号权限 -->
+      <el-tab-pane label="账号权限" name="accounts">
+        <div class="tab-header account-actions">
+          <el-input
+            v-model="userQuery.keyword"
+            placeholder="搜索用户名/邮箱/姓名"
+            clearable
+            style="width: 260px"
+            @keyup.enter="loadUsers"
+          />
+          <el-button @click="loadUsers">查询</el-button>
+          <el-button type="primary" :icon="Plus" @click="openUserDialog()">新增账号</el-button>
+        </div>
+
+        <el-table :data="users" v-loading="usersLoading" stripe>
+          <el-table-column prop="username" label="用户名" min-width="120" />
+          <el-table-column prop="email" label="邮箱" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="full_name" label="姓名" min-width="120" />
+          <el-table-column label="角色" min-width="180">
+            <template #default="{ row }">
+              <el-tag
+                v-for="role in row.roles"
+                :key="role.id"
+                size="small"
+                style="margin-right: 6px; margin-bottom: 4px"
+              >
+                {{ role.display_name || role.name }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="90" align="center">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'active' ? 'success' : 'info'" size="small">
+                {{ row.status === 'active' ? '启用' : '停用' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="管理员" width="90" align="center">
+            <template #default="{ row }">
+              <el-icon v-if="row.is_superuser" color="#22c55e"><Check /></el-icon>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="220" align="center">
+            <template #default="{ row }">
+              <el-button size="small" text type="primary" @click="openUserDialog(row)">编辑</el-button>
+              <el-button size="small" text type="danger" @click="deleteUser(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <div class="pagination-wrap">
+          <el-pagination
+            background
+            layout="total, prev, pager, next"
+            :current-page="userQuery.page"
+            :page-size="userQuery.page_size"
+            :total="userTotal"
+            @current-change="handleUserPageChange"
+          />
+        </div>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- LLM 配置对话框 -->
@@ -99,6 +161,57 @@
         <el-button type="primary" @click="saveLLM" :loading="llmSaving">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="userDialogVisible"
+      :title="editingUser ? '编辑账号' : '新增账号'"
+      width="640px"
+    >
+      <el-form :model="userForm" :rules="userRules" ref="userFormRef" label-width="110px">
+        <el-form-item label="用户名" prop="username">
+          <el-input v-model="userForm.username" :disabled="!!editingUser" placeholder="如：alice" />
+        </el-form-item>
+        <el-form-item label="邮箱" prop="email">
+          <el-input v-model="userForm.email" placeholder="name@example.com" />
+        </el-form-item>
+        <el-form-item label="姓名">
+          <el-input v-model="userForm.full_name" placeholder="可选" />
+        </el-form-item>
+        <el-form-item :label="editingUser ? '重置密码' : '密码'" prop="password">
+          <el-input
+            v-model="userForm.password"
+            type="password"
+            show-password
+            :placeholder="editingUser ? '留空则不修改' : '至少8位，含大小写和数字'"
+          />
+        </el-form-item>
+        <el-form-item label="超级管理员">
+          <el-switch v-model="userForm.is_superuser" />
+        </el-form-item>
+        <el-form-item label="账号状态">
+          <el-radio-group v-model="userForm.status">
+            <el-radio-button label="active">启用</el-radio-button>
+            <el-radio-button label="inactive">停用</el-radio-button>
+            <el-radio-button label="locked">锁定</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="角色分配">
+          <el-select v-model="userForm.role_ids" multiple collapse-tags placeholder="选择角色" style="width: 100%">
+            <el-option
+              v-for="role in roles"
+              :key="role.id"
+              :label="role.display_name || role.name"
+              :value="role.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="userDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="userSaving" @click="saveUser">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -106,8 +219,10 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Check } from '@element-plus/icons-vue'
+import { useAuthStore } from '@/stores/auth'
 import { systemApi } from '@/api/index'
 
+const authStore = useAuthStore()
 const activeTab = ref('llm')
 const llmLoading = ref(false)
 const llmConfigs = ref([])
@@ -116,6 +231,56 @@ const llmSaving = ref(false)
 const llmFormRef = ref(null)
 const editingLLM = ref(null)
 const sysConfigSaving = ref(false)
+
+const usersLoading = ref(false)
+const users = ref([])
+const userTotal = ref(0)
+const roles = ref([])
+const userDialogVisible = ref(false)
+const userFormRef = ref(null)
+const userSaving = ref(false)
+const editingUser = ref(null)
+
+const userQuery = reactive({
+  page: 1,
+  page_size: 10,
+  keyword: '',
+})
+
+const userForm = reactive({
+  username: '',
+  email: '',
+  full_name: '',
+  password: '',
+  is_superuser: false,
+  status: 'active',
+  role_ids: [],
+})
+
+const userRules = {
+  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  email: [{ required: true, message: '请输入邮箱', trigger: 'blur' }],
+  password: [
+    {
+      validator: (_, value, callback) => {
+        if (editingUser.value && !value) {
+          callback()
+          return
+        }
+        if (!value) {
+          callback(new Error('请输入密码'))
+          return
+        }
+        if (value.length < 8) {
+          callback(new Error('密码至少8位'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+}
 
 // provider 相关常量已移除，配置仅包含 API 地址、API Key 与模型名称
 
@@ -263,14 +428,129 @@ async function loadSysConfigFromStorage() {
   }
 }
 
+async function loadRoles() {
+  try {
+    const res = await systemApi.listRoles()
+    roles.value = res.data || []
+  } catch {
+    roles.value = []
+    ElMessage.error('加载角色列表失败')
+  }
+}
+
+async function loadUsers() {
+  usersLoading.value = true
+  try {
+    const res = await systemApi.listUsers(userQuery)
+    users.value = res.data?.items || []
+    userTotal.value = res.data?.total || 0
+  } catch {
+    ElMessage.error('加载账号列表失败')
+  } finally {
+    usersLoading.value = false
+  }
+}
+
+function handleUserPageChange(page) {
+  userQuery.page = page
+  loadUsers()
+}
+
+function openUserDialog(row = null) {
+  editingUser.value = row
+  if (row) {
+    Object.assign(userForm, {
+      username: row.username,
+      email: row.email,
+      full_name: row.full_name || '',
+      password: '',
+      is_superuser: row.is_superuser,
+      status: row.status,
+      role_ids: (row.roles || []).map((r) => r.id),
+    })
+  } else {
+    Object.assign(userForm, {
+      username: '',
+      email: '',
+      full_name: '',
+      password: '',
+      is_superuser: false,
+      status: 'active',
+      role_ids: [],
+    })
+  }
+  userDialogVisible.value = true
+}
+
+async function saveUser() {
+  await userFormRef.value.validate()
+  userSaving.value = true
+  try {
+    const payload = {
+      email: userForm.email,
+      full_name: userForm.full_name || null,
+      is_superuser: userForm.is_superuser,
+      status: userForm.status,
+      role_ids: userForm.role_ids,
+    }
+
+    if (editingUser.value) {
+      if (userForm.password) {
+        payload.password = userForm.password
+      }
+      await systemApi.updateUser(editingUser.value.id, payload)
+      ElMessage.success('账号更新成功')
+      if (editingUser.value.id === authStore.user?.id) {
+        await authStore.fetchMe()
+      }
+    } else {
+      payload.username = userForm.username
+      payload.password = userForm.password
+      await systemApi.createUser(payload)
+      ElMessage.success('账号创建成功')
+    }
+    userDialogVisible.value = false
+    loadUsers()
+  } catch {
+    ElMessage.error('保存失败，请检查输入')
+  } finally {
+    userSaving.value = false
+  }
+}
+
+async function deleteUser(row) {
+  await ElMessageBox.confirm(`确认删除账号「${row.username}」？`, '删除确认', { type: 'warning' })
+  try {
+    await systemApi.deleteUser(row.id)
+    ElMessage.success('删除成功')
+    loadUsers()
+  } catch {
+    ElMessage.error('删除失败')
+  }
+}
+
 onMounted(() => {
   loadLLMConfigs()
   loadSysConfigFromStorage()
+  loadRoles()
+  loadUsers()
 })
 </script>
 
 <style scoped>
 .tab-header {
   margin-bottom: 16px;
+}
+
+.account-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.pagination-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
 }
 </style>

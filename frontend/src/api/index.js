@@ -19,6 +19,9 @@ export const templateApi = {
   // 添加字段
   addField: (templateId, data) => request.post(`/templates/${templateId}/fields`, data),
 
+  // 从文档自动生成模板建议
+  inferFromDocument: (data) => request.post('/templates/infer-from-document', data),
+
   // 获取分类列表
   listCategories: () => request.get('/templates/categories/list'),
 
@@ -109,4 +112,11 @@ export const systemApi = {
   listSystemConfigs: () => request.get('/system/configs'),
   getSystemConfig: (key) => request.get(`/system/configs/${key}`),
   putSystemConfig: (key, data) => request.put(`/system/configs/${key}`, data),
+
+  // 管理员账号与权限
+  listRoles: () => request.get('/system/roles'),
+  listUsers: (params) => request.get('/system/users', { params }),
+  createUser: (data) => request.post('/system/users', data),
+  updateUser: (id, data) => request.put(`/system/users/${id}`, data),
+  deleteUser: (id) => request.delete(`/system/users/${id}`),
 }

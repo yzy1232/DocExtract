@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.schemas.template import (
     TemplateCreate, TemplateUpdate, TemplateOut, TemplateListOut,
-    TemplateFieldCreate, TemplateFieldOut, TemplateCategoryCreate, TemplateCategoryOut
+    TemplateFieldCreate, TemplateFieldOut, TemplateCategoryCreate, TemplateCategoryOut,
+    TemplateInferRequest, TemplateInferOut,
 )
 from app.schemas.common import ResponseBase, PaginatedResponse, PageInfo
 from app.services.template_service import TemplateService
@@ -27,6 +28,24 @@ async def create_template(
     svc = TemplateService(db)
     template = await svc.create(data, current_user.id)
     return ResponseBase(data=TemplateOut.model_validate(template))
+
+
+@router.post("/infer-from-document", response_model=ResponseBase[TemplateInferOut], summary="从文档自动推断模板")
+async def infer_template_from_document(
+    data: TemplateInferRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    svc = TemplateService(db)
+    inferred = await svc.infer_template_from_document(
+        document_id=data.document_id,
+        requester_id=current_user.id,
+        requester_is_superuser=current_user.is_superuser,
+        template_name=data.template_name,
+        description=data.description,
+        max_fields=data.max_fields,
+    )
+    return ResponseBase(data=TemplateInferOut.model_validate(inferred))
 
 
 @router.get("", response_model=ResponseBase[PaginatedResponse[TemplateListOut]], summary="查询模板列表")

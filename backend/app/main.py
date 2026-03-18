@@ -41,10 +41,31 @@ async def lifespan(app: FastAPI):
     # 启动
     logger.info(f"启动 {settings.APP_NAME} v{settings.APP_VERSION}")
     try:
-        await create_tables()
-        logger.info("数据库表初始化完成")
+        from app.core.init_defaults import (
+            is_system_bootstrap_completed,
+            ensure_default_roles_and_admin,
+            ensure_default_llm_system_config,
+            mark_system_bootstrap_completed,
+        )
+
+        bootstrap_completed = await is_system_bootstrap_completed()
+        if not bootstrap_completed:
+            logger.info("检测到首次启动，开始初始化数据库与默认数据")
+            await create_tables()
+            logger.info("数据库表初始化完成")
+
+            await ensure_default_roles_and_admin()
+            logger.info("默认角色与管理员初始化完成")
+
+            await ensure_default_llm_system_config()
+            logger.info("默认 LLM 系统配置初始化完成")
+
+            await mark_system_bootstrap_completed()
+            logger.info("首次初始化标记写入完成")
+        else:
+            logger.info("系统已完成首次初始化，跳过数据库与默认账户初始化")
     except Exception as e:
-        logger.warning(f"数据库初始化失败（可忽略，如使用 Alembic）: {e}")
+        logger.warning(f"启动初始化失败（可忽略，如使用 Alembic）: {e}")
 
     try:
         redis = await get_redis()
@@ -58,23 +79,6 @@ async def lifespan(app: FastAPI):
         logger.info("对象存储桶初始化完成")
     except Exception as e:
         logger.warning(f"对象存储初始化失败: {e}")
-
-    # 尝试创建系统默认数据（角色、默认管理员）
-    try:
-        from app.core.init_defaults import ensure_default_roles_and_admin
-
-        await ensure_default_roles_and_admin()
-        logger.info("默认角色与管理员初始化完成")
-    except Exception as e:
-        logger.warning(f"默认数据初始化失败: {e}")
-
-    try:
-        from app.core.init_defaults import ensure_default_llm_system_config
-
-        await ensure_default_llm_system_config()
-        logger.info("默认 LLM 系统配置初始化完成")
-    except Exception as e:
-        logger.warning(f"默认数据初始化失败: {e}")
 
     yield  # 应用运行期间
 

@@ -17,6 +17,7 @@ from app.config import settings
 from app.core.security import hash_password
 
 logger = logging.getLogger("app")
+BOOTSTRAP_FLAG_KEY = "system_bootstrap_done"
 
 
 async def ensure_default_roles_and_admin() -> None:
@@ -183,3 +184,43 @@ async def ensure_default_llm_system_config() -> None:
                 await session.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name})
             except Exception:
                 pass
+
+
+async def is_system_bootstrap_completed() -> bool:
+    """检查系统是否已经完成首次初始化。"""
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await session.execute(
+                select(SystemConfig).where(SystemConfig.key == BOOTSTRAP_FLAG_KEY)
+            )
+            cfg = result.scalar_one_or_none()
+            return bool(cfg and str(cfg.value) == "1")
+        except Exception:
+            # 表还不存在或数据库尚未完成初始化时，视为未初始化
+            return False
+
+
+async def mark_system_bootstrap_completed() -> None:
+    """写入首次初始化完成标记。"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(SystemConfig).where(SystemConfig.key == BOOTSTRAP_FLAG_KEY))
+        cfg = result.scalar_one_or_none()
+        if cfg:
+            cfg.value = "1"
+            cfg.description = "系统首次初始化是否完成"
+            cfg.data_type = "bool"
+        else:
+            cfg = SystemConfig(
+                id=str(uuid.uuid4()),
+                category="system",
+                key=BOOTSTRAP_FLAG_KEY,
+                value="1",
+                default_value="0",
+                description="系统首次初始化是否完成",
+                data_type="bool",
+                is_editable=False,
+                is_encrypted=False,
+                updated_by=None,
+            )
+            session.add(cfg)
+        await session.commit()

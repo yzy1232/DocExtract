@@ -130,6 +130,31 @@
 
         <!-- 右侧操作栏 -->
         <el-col :span="8">
+          <el-card header="从文档自动生成" shadow="never" class="auto-card">
+            <el-form-item label="选择文档" label-width="80px" style="margin-bottom: 12px">
+              <el-select
+                v-model="inferForm.document_id"
+                placeholder="请选择已解析文档"
+                filterable
+                style="width:100%"
+              >
+                <el-option
+                  v-for="doc in documentOptions"
+                  :key="doc.id"
+                  :label="doc.display_name || doc.name"
+                  :value="doc.id"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="字段上限" label-width="80px" style="margin-bottom: 12px">
+              <el-input-number v-model="inferForm.max_fields" :min="1" :max="50" style="width:100%" />
+            </el-form-item>
+            <el-button type="success" style="width:100%" :loading="inferring" @click="generateFromDocument()">
+              自动生成字段
+            </el-button>
+            <div class="auto-hint">生成后可继续修改字段名称、类型与描述。</div>
+          </el-card>
+
           <el-card header="操作" shadow="never">
             <div style="display:flex;flex-direction:column;gap:12px">
               <el-button type="primary" style="width:100%" :loading="saving" @click="submit">
@@ -147,14 +172,16 @@
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Plus, Delete } from '@element-plus/icons-vue'
-import { templateApi } from '@/api/index'
+import { templateApi, documentApi } from '@/api/index'
 
 const router = useRouter()
 const route = useRoute()
 const formRef = ref(null)
 const saving = ref(false)
+const inferring = ref(false)
+const documentOptions = ref([])
 
 const isEdit = computed(() => !!route.params.id && route.path.includes('edit'))
 
@@ -166,6 +193,11 @@ const form = reactive({
   fields: [],
 })
 
+const inferForm = reactive({
+  document_id: '',
+  max_fields: 12,
+})
+
 const rules = {
   name: [{ required: true, message: '请输入模板名称', trigger: 'blur' }],
 }
@@ -174,10 +206,15 @@ const fieldTypes = [
   { label: '文本', value: 'text' },
   { label: '数字', value: 'number' },
   { label: '日期', value: 'date' },
-  { label: '金额', value: 'money' },
+  { label: '日期时间', value: 'datetime' },
   { label: '布尔', value: 'boolean' },
   { label: '列表', value: 'list' },
-  { label: '对象', value: 'object' },
+  { label: '表格', value: 'table' },
+  { label: '地址', value: 'address' },
+  { label: '电话', value: 'phone' },
+  { label: '邮箱', value: 'email' },
+  { label: '链接', value: 'url' },
+  { label: '自定义', value: 'custom' },
 ]
 
 function addField() {
@@ -194,6 +231,66 @@ function addField() {
 
 function removeField(idx) {
   form.fields.splice(idx, 1)
+}
+
+async function loadProcessedDocuments() {
+  try {
+    const res = await documentApi.list({ status: 'processed', page_size: 100, page: 1 })
+    documentOptions.value = res.data.items || []
+  } catch {
+    documentOptions.value = []
+  }
+}
+
+async function generateFromDocument(forceOverwrite = false) {
+  if (!inferForm.document_id) {
+    ElMessage.warning('请先选择文档')
+    return
+  }
+
+  if (!forceOverwrite && form.fields.length > 0) {
+    try {
+      await ElMessageBox.confirm('自动生成会覆盖当前字段，是否继续？', '覆盖确认', { type: 'warning' })
+    } catch {
+      return
+    }
+  }
+
+  inferring.value = true
+  try {
+    const payload = {
+      document_id: inferForm.document_id,
+      max_fields: inferForm.max_fields,
+      template_name: form.name || undefined,
+      description: form.description || undefined,
+    }
+    const res = await templateApi.inferFromDocument(payload)
+    const data = res.data || {}
+
+    if (!form.name && data.name) {
+      form.name = data.name
+    }
+    if (!form.description && data.description) {
+      form.description = data.description
+    }
+
+    form.fields = (data.fields || []).map((field, idx) => ({
+      name: field.name || `field_${idx + 1}`,
+      display_name: field.display_name || `字段${idx + 1}`,
+      field_type: field.field_type || 'text',
+      required: !!field.required,
+      is_array: field.field_type === 'list',
+      description: field.description || '',
+      extraction_hints: field.extraction_hints || '',
+      sort_order: field.sort_order ?? idx,
+    }))
+
+    ElMessage.success(`已生成 ${form.fields.length} 个字段，可继续编辑后保存`)
+  } catch {
+    ElMessage.error('自动生成失败')
+  } finally {
+    inferring.value = false
+  }
 }
 
 async function submit() {
@@ -218,6 +315,8 @@ async function submit() {
 }
 
 onMounted(async () => {
+  await loadProcessedDocuments()
+
   if (isEdit.value) {
     try {
       const res = await templateApi.get(route.params.id)
@@ -225,6 +324,13 @@ onMounted(async () => {
     } catch {
       ElMessage.error('加载模板信息失败')
     }
+    return
+  }
+
+  const queryDocId = String(route.query.document_id || '')
+  if (queryDocId) {
+    inferForm.document_id = queryDocId
+    await generateFromDocument(true)
   }
 })
 </script>
@@ -252,5 +358,16 @@ onMounted(async () => {
 .empty-fields {
   text-align: center;
   padding: 40px 0;
+}
+
+.auto-card {
+  margin-bottom: 16px;
+}
+
+.auto-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
 }
 </style>

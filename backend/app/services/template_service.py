@@ -3,13 +3,20 @@
 """
 import uuid
 import json
-from typing import Optional, List, Tuple
+import re
+from typing import Optional, List, Tuple, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, delete
 from sqlalchemy.orm import selectinload
-from app.models.template import Template, TemplateField, TemplateVersion, TemplateCategory, TemplateStatus
+from app.models.template import Template, TemplateField, TemplateVersion, TemplateCategory, TemplateStatus, FieldType
+from app.models.document import Document, DocumentStatus
 from app.schemas.template import TemplateCreate, TemplateUpdate, TemplateCategoryCreate
-from app.core.exceptions import NotFoundException, ForbiddenException, ConflictException
+from app.core.exceptions import NotFoundException, ValidationException
+from app.llm.base_adapter import LLMMessage
+from app.llm.factory import get_default_adapter, get_default_llm_config
+from app.core.storage import storage
+from app.processors.factory import get_processor
+from app.processors.mime_resolver import normalize_mime_type
 
 
 class TemplateService:
@@ -222,3 +229,242 @@ class TemplateService:
             select(TemplateCategory).order_by(TemplateCategory.sort_order)
         )
         return result.scalars().all()
+
+    async def infer_template_from_document(
+        self,
+        document_id: str,
+        requester_id: str,
+        requester_is_superuser: bool,
+        template_name: Optional[str] = None,
+        description: Optional[str] = None,
+        max_fields: int = 20,
+    ) -> Dict[str, Any]:
+        query = select(Document).where(
+            Document.id == document_id,
+            Document.deleted_at.is_(None),
+        )
+        if not requester_is_superuser:
+            query = query.where(Document.owner_id == requester_id)
+
+        result = await self.db.execute(query)
+        document = result.scalar_one_or_none()
+        if not document:
+            raise NotFoundException("文档", document_id)
+        if document.status != DocumentStatus.PROCESSED:
+            raise ValidationException(f"文档尚未解析完成，当前状态: {document.status.value}")
+
+        file_content = storage.download_file(document.storage_bucket, document.storage_path)
+        mime_type = normalize_mime_type(document.mime_type, document.name)
+        processor = get_processor(mime_type)
+        if not processor:
+            raise ValidationException(f"文档不支持解析，MIME={mime_type}")
+
+        parse_result = await processor.parse(file_content, document.name)
+        full_text = (parse_result.full_text or "").strip()
+        if not full_text:
+            raise ValidationException("文档内容为空，无法自动生成模板")
+
+        sample_text = full_text[:12000]
+        inferred_fields: List[Dict[str, Any]] = []
+        inferred_name = (template_name or "").strip() or self._default_template_name(document.name)
+        inferred_desc = (description or "").strip() or f"基于文档《{document.display_name or document.name}》自动生成"
+
+        try:
+            adapter = get_default_adapter()
+            llm_config = get_default_llm_config()
+            llm_config.temperature = 0.1
+            llm_config.max_tokens = min(llm_config.max_tokens, 1800)
+
+            prompt = self._build_infer_prompt(sample_text, inferred_name, inferred_desc, max_fields)
+            messages = [
+                LLMMessage(
+                    role="system",
+                    content=(
+                        "你是资深文档结构化工程师。请根据文档内容设计信息提取模板字段。"
+                        "输出必须是严格 JSON，不要包含代码块标记或额外解释。"
+                    ),
+                ),
+                LLMMessage(role="user", content=prompt),
+            ]
+
+            response = await adapter.chat(messages, llm_config)
+            parsed = self._parse_infer_response(response.content)
+            inferred_name = (parsed.get("name") or inferred_name).strip() or inferred_name
+            inferred_desc = (parsed.get("description") or inferred_desc).strip() or inferred_desc
+            inferred_fields = parsed.get("fields") or []
+        except Exception:
+            inferred_fields = self._fallback_fields_from_text(sample_text, max_fields)
+
+        cleaned_fields = self._sanitize_inferred_fields(inferred_fields, max_fields)
+        if not cleaned_fields:
+            cleaned_fields = self._fallback_fields_from_text(sample_text, max_fields)
+
+        return {
+            "name": inferred_name,
+            "description": inferred_desc,
+            "fields": cleaned_fields,
+        }
+
+    def _default_template_name(self, filename: str) -> str:
+        base = (filename or "未命名文档").rsplit(".", 1)[0].strip()
+        return f"{base}提取模板"
+
+    def _build_infer_prompt(self, doc_text: str, template_name: str, description: str, max_fields: int) -> str:
+        allowed_types = ", ".join([t.value for t in FieldType])
+        return (
+            "请从以下文档内容设计一个可用于结构化提取的模板。\n"
+            f"目标模板名: {template_name}\n"
+            f"模板描述: {description}\n"
+            f"最多输出字段数: {max_fields}\n"
+            f"字段类型只能使用: {allowed_types}\n\n"
+            "输出格式必须是以下 JSON 对象:\n"
+            "{\n"
+            "  \"name\": \"模板名称\",\n"
+            "  \"description\": \"模板描述\",\n"
+            "  \"fields\": [\n"
+            "    {\n"
+            "      \"name\": \"english_or_zh_key\",\n"
+            "      \"display_name\": \"字段显示名\",\n"
+            "      \"field_type\": \"text\",\n"
+            "      \"description\": \"字段含义\",\n"
+            "      \"required\": false,\n"
+            "      \"extraction_hints\": \"提取提示\"\n"
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "要求:\n"
+            "1) 字段名必须可读且唯一。\n"
+            "2) 只输出文档中可能稳定出现的关键字段。\n"
+            "3) 不要输出任何 JSON 之外内容。\n\n"
+            "文档内容如下:\n"
+            f"{doc_text}"
+        )
+
+    def _parse_infer_response(self, content: str) -> Dict[str, Any]:
+        text = (content or "").strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if len(lines) >= 3:
+                text = "\n".join(lines[1:-1]).strip()
+
+        try:
+            return json.loads(text)
+        except Exception:
+            match = re.search(r"\{[\s\S]*\}", text)
+            if not match:
+                raise ValidationException("LLM 返回内容无法解析为 JSON")
+            return json.loads(match.group(0))
+
+    def _sanitize_inferred_fields(self, fields: List[Dict[str, Any]], max_fields: int) -> List[Dict[str, Any]]:
+        used_names = set()
+        cleaned = []
+        for idx, raw in enumerate(fields[:max_fields]):
+            if not isinstance(raw, dict):
+                continue
+
+            name = self._normalize_field_name(raw.get("name"), idx + 1)
+            name = self._deduplicate_name(name, used_names)
+            used_names.add(name)
+
+            display_name = str(raw.get("display_name") or raw.get("name") or f"字段{idx + 1}").strip()
+            field_type = self._normalize_field_type(raw.get("field_type"))
+
+            cleaned.append(
+                {
+                    "name": name,
+                    "display_name": display_name[:128],
+                    "field_type": field_type,
+                    "description": (str(raw.get("description") or "").strip() or None),
+                    "required": bool(raw.get("required", False)),
+                    "extraction_hints": (str(raw.get("extraction_hints") or "").strip() or None),
+                    "sort_order": idx,
+                }
+            )
+        return cleaned
+
+    def _normalize_field_name(self, value: Any, idx: int) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return f"field_{idx}"
+
+        text = re.sub(r"\s+", "_", text)
+        text = re.sub(r"[^\u4e00-\u9fff_a-zA-Z0-9]", "_", text)
+        text = re.sub(r"_+", "_", text).strip("_")
+        if not text:
+            return f"field_{idx}"
+        if re.match(r"^[0-9]", text):
+            text = f"field_{text}"
+        return text[:64]
+
+    def _deduplicate_name(self, name: str, used_names: set[str]) -> str:
+        if name not in used_names:
+            return name
+        suffix = 2
+        while f"{name}_{suffix}" in used_names:
+            suffix += 1
+        return f"{name}_{suffix}"[:64]
+
+    def _normalize_field_type(self, value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        alias = {
+            "integer": "number",
+            "float": "number",
+            "double": "number",
+            "money": "number",
+            "amount": "number",
+            "time": "datetime",
+            "bool": "boolean",
+            "array": "list",
+            "object": "custom",
+        }
+        normalized = alias.get(raw, raw)
+        if normalized in {t.value for t in FieldType}:
+            return normalized
+        return FieldType.TEXT.value
+
+    def _fallback_fields_from_text(self, text: str, max_fields: int) -> List[Dict[str, Any]]:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        candidate_names = []
+        for line in lines[:300]:
+            if "：" in line:
+                key = line.split("：", 1)[0].strip()
+            elif ":" in line:
+                key = line.split(":", 1)[0].strip()
+            else:
+                continue
+            if 1 <= len(key) <= 20:
+                candidate_names.append(key)
+
+        unique = []
+        seen = set()
+        for name in candidate_names:
+            if name in seen:
+                continue
+            seen.add(name)
+            unique.append(name)
+            if len(unique) >= max_fields:
+                break
+
+        if not unique:
+            unique = ["编号", "名称", "日期", "金额"][:max_fields]
+
+        fields = []
+        used_names = set()
+        for idx, display_name in enumerate(unique):
+            key = self._deduplicate_name(self._normalize_field_name(display_name, idx + 1), used_names)
+            used_names.add(key)
+            field_type = FieldType.NUMBER.value if any(k in display_name for k in ["金额", "数量", "总计"]) else FieldType.TEXT.value
+            if any(k in display_name for k in ["日期", "时间"]):
+                field_type = FieldType.DATE.value
+            fields.append(
+                {
+                    "name": key,
+                    "display_name": display_name,
+                    "field_type": field_type,
+                    "description": f"从文档中提取{display_name}",
+                    "required": False,
+                    "extraction_hints": None,
+                    "sort_order": idx,
+                }
+            )
+        return fields

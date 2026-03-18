@@ -91,6 +91,15 @@
             >
               提取
             </el-button>
+            <el-button
+              size="small"
+              text
+              type="primary"
+              :disabled="row.status !== 'processed'"
+              @click="createTemplateFromDoc(row)"
+            >
+              提取模板
+            </el-button>
             <el-button size="small" text type="primary" @click="downloadDoc(row)">
               下载
             </el-button>
@@ -187,6 +196,14 @@ function resetQuery() {
 
 function createExtraction(docId) {
   router.push({ path: '/extractions/create', query: { document_id: docId } })
+}
+
+function createTemplateFromDoc(row) {
+  if (row.status !== 'processed') {
+    ElMessage.warning('请先等待文档解析完成')
+    return
+  }
+  router.push({ path: '/templates/create', query: { document_id: row.id } })
 }
 
 async function downloadDoc(row) {

@@ -5,6 +5,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
 from datetime import datetime
 import re
+from app.models.user import UserStatus
 
 
 class UserBase(BaseModel):
@@ -39,6 +40,56 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = Field(default=None, max_length=128)
     email: Optional[EmailStr] = None
     avatar_url: Optional[str] = None
+
+
+class AdminUserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=64, description="用户名")
+    email: EmailStr
+    full_name: Optional[str] = Field(default=None, max_length=128)
+    password: str = Field(min_length=8, max_length=128, description="密码")
+    is_superuser: bool = False
+    status: UserStatus = UserStatus.ACTIVE
+    role_ids: List[str] = []
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("密码必须包含至少一个大写字母")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("密码必须包含至少一个小写字母")
+        if not re.search(r"\d", v):
+            raise ValueError("密码必须包含至少一个数字")
+        return v
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        if not re.match(r"^[a-zA-Z0-9_-]+$", v):
+            raise ValueError("用户名只能包含字母、数字、下划线和连字符")
+        return v
+
+
+class AdminUserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = Field(default=None, max_length=128)
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+    is_superuser: Optional[bool] = None
+    status: Optional[UserStatus] = None
+    role_ids: Optional[List[str]] = None
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("密码必须包含至少一个大写字母")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("密码必须包含至少一个小写字母")
+        if not re.search(r"\d", v):
+            raise ValueError("密码必须包含至少一个数字")
+        return v
 
 
 class UserPasswordChange(BaseModel):

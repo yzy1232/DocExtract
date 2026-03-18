@@ -3,23 +3,47 @@
 """
 import uuid
 import logging
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text
+from sqlalchemy import select, text, or_, func
+from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.schemas.common import ResponseBase
 from app.core.auth import get_current_superuser
-from app.models.user import User
+from app.models.user import User, Role, UserStatus
 from app.models.system import LLMConfig, SystemConfig
+from app.schemas.user import AdminUserCreate, AdminUserUpdate
+from app.core.security import hash_password
 from app.llm.factory import get_default_llm_config, create_adapter_from_db_config, get_default_adapter
 from sqlalchemy import update as sqlalchemy_update
-import uuid
-from app.models.system import SystemConfig
-import uuid
 
 router = APIRouter(prefix="/system", tags=["系统管理"])
 
 logger = logging.getLogger("app.api.v1.system")
+
+
+def _serialize_user(user: User) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "full_name": user.full_name,
+        "status": user.status.value if hasattr(user.status, "value") else str(user.status),
+        "is_superuser": user.is_superuser,
+        "roles": [
+            {
+                "id": role.id,
+                "name": role.name,
+                "display_name": role.display_name,
+                "description": role.description,
+            }
+            for role in (user.roles or [])
+        ],
+        "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+    }
 
 
 @router.get("/health", response_model=ResponseBase[dict], summary="健康检查", include_in_schema=False)
@@ -331,3 +355,167 @@ async def put_system_config(
         db.add(new_cfg)
     await db.flush()
     return ResponseBase(data={'key': key, 'value': payload.get('value')})
+
+
+@router.get('/roles', response_model=ResponseBase[list[dict]], summary='获取角色列表')
+async def list_roles(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_superuser),
+):
+    result = await db.execute(select(Role).order_by(Role.is_system.desc(), Role.name.asc()))
+    roles = result.scalars().all()
+    return ResponseBase(data=[
+        {
+            'id': r.id,
+            'name': r.name,
+            'display_name': r.display_name,
+            'description': r.description,
+            'is_system': r.is_system,
+        }
+        for r in roles
+    ])
+
+
+@router.get('/users', response_model=ResponseBase[dict], summary='管理员查询账号列表')
+async def list_users(
+    page: int = 1,
+    page_size: int = 20,
+    keyword: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_superuser),
+):
+    query = select(User).options(selectinload(User.roles))
+    if keyword:
+        kw = f"%{keyword}%"
+        query = query.where(
+            or_(
+                User.username.ilike(kw),
+                User.email.ilike(kw),
+                User.full_name.ilike(kw),
+            )
+        )
+
+    total_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(total_query)).scalar() or 0
+
+    result = await db.execute(
+        query.order_by(User.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    )
+    users = result.scalars().unique().all()
+    return ResponseBase(data={
+        'items': [_serialize_user(u) for u in users],
+        'total': total,
+        'page': page,
+        'page_size': page_size,
+    })
+
+
+@router.post('/users', response_model=ResponseBase[dict], summary='管理员新增账号')
+async def create_user(
+    payload: AdminUserCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_superuser),
+):
+    # 用户名/邮箱唯一检查
+    existing = await db.execute(
+        select(User).where(or_(User.username == payload.username, User.email == payload.email))
+    )
+    if existing.scalar_one_or_none():
+        from app.core.exceptions import ConflictException
+        raise ConflictException('用户名或邮箱已存在')
+
+    user = User(
+        id=str(uuid.uuid4()),
+        username=payload.username,
+        email=payload.email,
+        full_name=payload.full_name,
+        hashed_password=hash_password(payload.password),
+        status=payload.status,
+        is_superuser=payload.is_superuser,
+        created_at=datetime.now(timezone.utc),
+    )
+
+    role_ids = payload.role_ids or []
+    if role_ids:
+        role_result = await db.execute(select(Role).where(Role.id.in_(role_ids)))
+        user.roles = role_result.scalars().all()
+    else:
+        # 默认分配 user 角色
+        default_role = await db.execute(select(Role).where(Role.name == 'user'))
+        role = default_role.scalar_one_or_none()
+        if role:
+            user.roles = [role]
+
+    db.add(user)
+    await db.flush()
+    await db.refresh(user, attribute_names=['roles'])
+    return ResponseBase(data=_serialize_user(user))
+
+
+@router.put('/users/{user_id}', response_model=ResponseBase[dict], summary='管理员更新账号')
+async def update_user(
+    user_id: str,
+    payload: AdminUserUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_superuser),
+):
+    from app.core.exceptions import NotFoundException, ConflictException
+
+    result = await db.execute(select(User).options(selectinload(User.roles)).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise NotFoundException('用户', user_id)
+
+    if payload.email and payload.email != user.email:
+        same_email = await db.execute(select(User).where(User.email == payload.email, User.id != user_id))
+        if same_email.scalar_one_or_none():
+            raise ConflictException('邮箱已被占用')
+        user.email = payload.email
+
+    if payload.full_name is not None:
+        user.full_name = payload.full_name
+    if payload.password:
+        user.hashed_password = hash_password(payload.password)
+    if payload.status:
+        user.status = payload.status
+    if payload.is_superuser is not None:
+        if user.id == current_user.id and payload.is_superuser is False:
+            raise ConflictException('不能取消当前登录管理员的超级管理员权限')
+        user.is_superuser = payload.is_superuser
+
+    if payload.role_ids is not None:
+        if payload.role_ids:
+            role_result = await db.execute(select(Role).where(Role.id.in_(payload.role_ids)))
+            user.roles = role_result.scalars().all()
+        else:
+            user.roles = []
+
+    await db.flush()
+    await db.refresh(user, attribute_names=['roles'])
+    return ResponseBase(data=_serialize_user(user))
+
+
+@router.delete('/users/{user_id}', response_model=ResponseBase[dict], summary='管理员删除账号')
+async def delete_user(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_superuser),
+):
+    from app.core.exceptions import NotFoundException, ConflictException
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise NotFoundException('用户', user_id)
+
+    if user.id == current_user.id:
+        raise ConflictException('不能删除当前登录账号')
+
+    if user.is_superuser:
+        super_count = (await db.execute(select(func.count(User.id)).where(User.is_superuser == True))).scalar() or 0
+        if super_count <= 1:
+            raise ConflictException('至少保留一个超级管理员账号')
+
+    await db.delete(user)
+    await db.flush()
+    return ResponseBase(data={'id': user_id})
