@@ -65,6 +65,7 @@ class TemplateCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128, description="模板名称")
     description: Optional[str] = None
     category_id: Optional[str] = None
+    status: TemplateStatus = Field(default=TemplateStatus.DRAFT)
     is_public: bool = False
     tags: List[str] = Field(default_factory=list)
     document_types: List[str] = Field(default_factory=list)

@@ -96,6 +96,13 @@ export const extractionApi = {
 
   // 导出结果
   export: (data) => request.post('/extractions/export', data),
+
+  // 下载导出文件（通过后端代理，避免预签名URL跨主机签名问题）
+  downloadExport: (objectKey) =>
+    request.get('/extractions/exports/download', {
+      params: { object_key: objectKey },
+      responseType: 'blob',
+    }),
 }
 
 export const systemApi = {

@@ -8,6 +8,7 @@ import re
 import logging
 from typing import Optional, List, Tuple, Dict, Any
 from datetime import datetime, timezone
+from urllib.parse import quote
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 from sqlalchemy.orm import selectinload
@@ -1409,19 +1410,44 @@ class ExtractionService:
         await self.db.flush()
         return extraction_result
 
-    async def export_results(self, task_ids: List[str], export_format: str) -> str:
-        """导出提取结果，返回下载 URL"""
-        results = []
+    async def export_results(self, task_ids: List[str], export_format: str) -> Dict[str, str]:
+        """导出提取结果，每条记录单独一行。返回对象键和后端下载 URL。"""
+        # 收集所有任务的structured_result
+        task_results = []
         for task_id in task_ids:
             result_query = await self.db.execute(
                 select(ExtractionResult).where(ExtractionResult.task_id == task_id)
             )
             er = result_query.scalar_one_or_none()
-            if er:
-                results.append({"task_id": task_id, **er.structured_result})
+            if er and er.structured_result:
+                task_results.append(er.structured_result)
+
+        # 转置结构：field->values[] 转换为 row[] 其中每个row是一条记录
+        export_rows = []
+        for sr in task_results:
+            if not sr:
+                continue
+
+            # 确定每个字段的值列表
+            field_values = {}
+            max_rows = 0
+            for field_name, field_value in sr.items():
+                if isinstance(field_value, list):
+                    field_values[field_name] = field_value
+                    max_rows = max(max_rows, len(field_value))
+                else:
+                    field_values[field_name] = [field_value]
+
+            # 生成行数据：每一行包含每个字段的一个值
+            max_rows = max(max_rows, 1)
+            for row_idx in range(max_rows):
+                row_data = {}
+                for field_name, values in field_values.items():
+                    row_data[field_name] = values[row_idx] if row_idx < len(values) else None
+                export_rows.append(row_data)
 
         if export_format == "json":
-            content = json.dumps(results, ensure_ascii=False, indent=2).encode("utf-8")
+            content = json.dumps(export_rows, ensure_ascii=False, indent=2).encode("utf-8")
             content_type = "application/json"
             ext = "json"
         else:
@@ -1429,9 +1455,9 @@ class ExtractionService:
             import openpyxl, io
             wb = openpyxl.Workbook()
             ws = wb.active
-            if results:
-                ws.append(list(results[0].keys()))
-                for row in results:
+            if export_rows:
+                ws.append(list(export_rows[0].keys()))
+                for row in export_rows:
                     ws.append([str(v) if v is not None else "" for v in row.values()])
             buf = io.BytesIO()
             wb.save(buf)
@@ -1441,4 +1467,29 @@ class ExtractionService:
 
         export_key = storage.build_result_key(f"export_{uuid.uuid4().hex[:8]}", ext)
         storage.upload_bytes(settings.STORAGE_BUCKET_RESULTS, export_key, content, content_type)
-        return storage.get_presigned_url(settings.STORAGE_BUCKET_RESULTS, export_key, 3600)
+        download_url = f"{settings.API_PREFIX}/extractions/exports/download?object_key={quote(export_key, safe='')}"
+        return {
+            "object_key": export_key,
+            "download_url": download_url,
+        }
+
+    def get_export_file(self, object_key: str) -> Tuple[bytes, str, str]:
+        """读取导出文件内容，供后端代理下载。"""
+        key = (object_key or "").strip().lstrip("/")
+        if not key.startswith("results/") or ".." in key:
+            raise ValidationException("非法导出文件路径")
+
+        if not storage.file_exists(settings.STORAGE_BUCKET_RESULTS, key):
+            raise NotFoundException("导出文件", key)
+
+        content = storage.download_file(settings.STORAGE_BUCKET_RESULTS, key)
+        ext = key.rsplit(".", 1)[-1].lower() if "." in key else "bin"
+        content_type_map = {
+            "json": "application/json",
+            "csv": "text/csv",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "pdf": "application/pdf",
+        }
+        content_type = content_type_map.get(ext, "application/octet-stream")
+        filename = f"extraction_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
+        return content, content_type, filename

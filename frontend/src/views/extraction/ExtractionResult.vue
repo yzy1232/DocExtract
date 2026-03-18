@@ -92,7 +92,7 @@
               :total="pagination.totalRows"
               :current-page="pagination.page"
               :page-size="pagination.pageSize"
-              :page-sizes="[50, 100, 200, 500]"
+              :page-sizes="[10, 25, 50, 100]"
               @current-change="handlePageChange"
               @size-change="handlePageSizeChange"
             />
@@ -118,7 +118,7 @@ const fieldResults = ref([])
 const smoothProgress = ref(0)
 const pagination = ref({
   page: 1,
-  pageSize: 100,
+  pageSize: 10,
   totalRows: 0,
   totalPages: 1,
 })
@@ -302,13 +302,50 @@ async function handlePageSizeChange(size) {
 
 async function exportResult(format) {
   try {
+    console.log(`[导出] 开始导出${format}格式，任务ID:${task.value.id}`)
     const res = await extractionApi.export({ task_ids: [task.value.id], format })
-    if (res.data.download_url) {
-      window.open(res.data.download_url, '_blank')
+    console.log(`[导出] 导出API响应:`, res?.data)
+    const objectKey = res?.data?.object_key
+    if (!objectKey) {
+      throw new Error('导出文件标识缺失')
     }
-    ElMessage.success('导出成功')
-  } catch {
-    ElMessage.error('导出失败')
+    console.log(`[导出] 获得对象键:${objectKey}，开始通过代理下载...`)
+
+    const downloadRes = await extractionApi.downloadExport(objectKey)
+    const contentType = downloadRes.headers?.['content-type'] || 'application/octet-stream'
+    const blob = downloadRes.data instanceof Blob
+      ? downloadRes.data
+      : new Blob([downloadRes.data], { type: contentType })
+    console.log(`[导出] 下载完成，大小:${blob.size || 0}字节`)
+
+    if (!blob || blob.size === 0) {
+      throw new Error('下载内容为空')
+    }
+
+    let filename = `extraction_export_${new Date().getTime()}.${format}`
+    const contentDisposition = downloadRes.headers?.['content-disposition'] || ''
+    const utf8FilenameMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+    const plainFilenameMatch = contentDisposition.match(/filename="?([^";]+)"?/i)
+    if (utf8FilenameMatch && utf8FilenameMatch[1]) {
+      filename = decodeURIComponent(utf8FilenameMatch[1])
+    } else if (plainFilenameMatch && plainFilenameMatch[1]) {
+      filename = decodeURIComponent(plainFilenameMatch[1])
+    }
+    console.log(`[导出] 文件名:${filename}`)
+
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+    console.log(`[导出] ${format}导出完成`)
+    ElMessage.success(`${format === 'json' ? 'JSON' : 'Excel'}导出成功`)
+  } catch (err) {
+    console.error(`[导出] ${format}导出失败:`, err)
+    ElMessage.error(`${format === 'json' ? 'JSON' : 'Excel'}导出失败: ${err.message || '未知错误'}`)
   }
 }
 

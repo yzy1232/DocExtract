@@ -71,7 +71,7 @@ class TemplateService:
             system_prompt=data.system_prompt,
             extraction_prompt_template=data.extraction_prompt_template,
             few_shot_examples=data.few_shot_examples,
-            status=TemplateStatus.DRAFT,
+            status=data.status or TemplateStatus.DRAFT,
             current_version=1,
         )
         self.db.add(template)

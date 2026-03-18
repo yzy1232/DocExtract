@@ -3,6 +3,8 @@
 """
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
+import io
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.schemas.extraction import (
@@ -299,5 +301,24 @@ async def export_results(
     current_user: User = Depends(get_current_user),
 ):
     svc = ExtractionService(db)
-    download_url = await svc.export_results(data.task_ids, data.format)
-    return ResponseBase(data={"download_url": download_url, "format": data.format})
+    export_data = await svc.export_results(data.task_ids, data.format)
+    return ResponseBase(data={
+        "download_url": export_data["download_url"],
+        "object_key": export_data["object_key"],
+        "format": data.format,
+    })
+
+
+@router.get("/exports/download", summary="下载导出文件")
+async def download_export_file(
+    object_key: str = Query(..., description="导出对象存储路径"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    svc = ExtractionService(db)
+    content, content_type, filename = svc.get_export_file(object_key)
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
