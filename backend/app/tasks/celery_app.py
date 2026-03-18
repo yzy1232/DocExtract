@@ -35,9 +35,9 @@ celery_app.conf.update(
         "app.tasks.document_tasks.*": {"queue": "document"},
         "app.tasks.extraction_tasks.*": {"queue": "extraction"},
     },
-    # 任务超时
-    task_soft_time_limit=300,
-    task_time_limit=600,
+    # 任务超时（增加到30分钟以支持复杂文档处理）
+    task_soft_time_limit=1800,  # 30分钟
+    task_time_limit=3600,  # 60分钟（硬限制）
     # 重试配置
     task_acks_late=True,
     task_reject_on_worker_lost=True,
