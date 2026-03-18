@@ -14,9 +14,10 @@ from app.models.extraction import (
 )
 from app.models.document import Document, DocumentStatus
 from app.models.template import Template
+from app.models.system import LLMConfig as LLMConfigModel, SystemConfig
 from app.schemas.extraction import ExtractionCreate, BatchExtractionCreate, ResultValidationUpdate
 from app.core.exceptions import NotFoundException, ValidationException
-from app.llm.factory import get_adapter_by_provider, get_default_adapter, get_default_llm_config
+from app.llm.factory import get_adapter_by_provider, get_default_llm_config, create_adapter_from_db_config
 from app.llm.prompt_engine import PromptEngine
 from app.core.storage import storage
 from app.config import settings
@@ -47,6 +48,65 @@ class ExtractionService:
             task.progress_message = message
         await self.db.flush()
         await self.db.commit()
+
+    async def _resolve_task_adapter_and_config(self, task: ExtractionTask):
+        """解析提取任务的 LLM 适配器与配置。
+
+        优先级：
+        1. 任务快照中的 base_url/api_key
+        2. 系统默认 LLM 配置（SystemConfig.default_llm_config_id -> LLMConfig）
+        3. 代码环境变量配置（向后兼容）
+        """
+        llm_config = get_default_llm_config(task.llm_provider, task.llm_model)
+
+        snapshot = task.llm_config_snapshot or {}
+        snapshot_api_key = snapshot.get("api_key") or snapshot.get("api_key_encrypted")
+        snapshot_base_url = snapshot.get("base_url")
+        snapshot_provider = snapshot.get("provider") or task.llm_provider or "custom"
+        snapshot_model = task.llm_model or snapshot.get("model_name") or snapshot.get("model")
+
+        if snapshot_api_key and snapshot_base_url:
+            if snapshot_model:
+                llm_config.model = snapshot_model
+            adapter = create_adapter_from_db_config(
+                snapshot_api_key,
+                snapshot_base_url,
+                provider=snapshot_provider,
+                model=llm_config.model,
+            )
+            return adapter, llm_config
+
+        # 若快照中无密钥，尝试读取系统默认 LLM 配置
+        try:
+            sc_result = await self.db.execute(
+                select(SystemConfig).where(SystemConfig.key == "default_llm_config_id")
+            )
+            sc = sc_result.scalar_one_or_none()
+            default_cfg_id = sc.value if sc and sc.value else None
+
+            if default_cfg_id:
+                cfg_result = await self.db.execute(
+                    select(LLMConfigModel).where(
+                        LLMConfigModel.id == default_cfg_id,
+                        LLMConfigModel.is_active == True,
+                    )
+                )
+                cfg = cfg_result.scalar_one_or_none()
+                if cfg and cfg.api_key_encrypted and cfg.base_url:
+                    llm_config.model = task.llm_model or cfg.model_name or llm_config.model
+                    adapter = create_adapter_from_db_config(
+                        cfg.api_key_encrypted,
+                        cfg.base_url,
+                        provider=task.llm_provider or "custom",
+                        model=llm_config.model,
+                    )
+                    return adapter, llm_config
+        except Exception:
+            # 读取系统配置失败时回退到环境变量配置
+            pass
+
+        adapter = get_adapter_by_provider(task.llm_provider or settings.DEFAULT_LLM_PROVIDER)
+        return adapter, llm_config
 
     def _normalize_task_progress(self, task: ExtractionTask):
         """统一任务进度显示，避免前后端状态与进度不一致。"""
@@ -221,8 +281,7 @@ class ExtractionService:
 
             await self._checkpoint_progress(task, 40.0, "正在调用LLM提取...")
 
-            adapter = get_adapter_by_provider(task.llm_provider or settings.DEFAULT_LLM_PROVIDER)
-            llm_config = get_default_llm_config(task.llm_provider, task.llm_model)
+            adapter, llm_config = await self._resolve_task_adapter_and_config(task)
             chunk_size = getattr(settings, "EXTRACTION_CHUNK_SIZE", EXTRACTION_CHUNK_SIZE)
             chunk_overlap = getattr(settings, "EXTRACTION_CHUNK_OVERLAP", EXTRACTION_CHUNK_OVERLAP)
             cross_validate_rounds = max(1, int(getattr(settings, "EXTRACTION_CROSS_VALIDATE_ROUNDS", EXTRACTION_CROSS_VALIDATE_ROUNDS)))
