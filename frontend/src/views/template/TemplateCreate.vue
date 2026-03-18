@@ -147,7 +147,7 @@
               </el-select>
             </el-form-item>
             <el-form-item label="字段上限" label-width="80px" style="margin-bottom: 12px">
-              <el-input-number v-model="inferForm.max_fields" :min="1" :max="50" style="width:100%" />
+              <el-input-number v-model="inferForm.max_fields" :min="1" :max="200" style="width:100%" />
             </el-form-item>
             <el-button type="success" style="width:100%" :loading="inferring" @click="generateFromDocument()">
               自动生成字段
