@@ -4,6 +4,7 @@
 import uuid
 import time
 import json
+import logging
 from typing import Optional, List, Tuple, Dict, Any
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from app.schemas.extraction import ExtractionCreate, BatchExtractionCreate, Resu
 from app.core.exceptions import NotFoundException, ValidationException
 from app.llm.factory import get_adapter_by_provider, get_default_llm_config, create_adapter_from_db_config
 from app.llm.prompt_engine import PromptEngine
+from app.llm.base_adapter import LLMMessage
 from app.core.storage import storage
 from app.config import settings
 from app.processors.mime_resolver import normalize_mime_type
@@ -29,6 +31,10 @@ EXTRACTION_CHUNK_OVERLAP = 800
 EXTRACTION_CROSS_VALIDATE_ROUNDS = 2
 EXTRACTION_MIN_AGREEMENT = 2
 EXTRACTION_STALE_TIMEOUT_SECONDS = 300
+LLM_IO_LOG_MAX_CHARS = 8000
+
+
+logger = logging.getLogger(__name__)
 
 
 class ExtractionService:
@@ -46,8 +52,310 @@ class ExtractionService:
         task.progress = round(max(0.0, min(100.0, float(progress))), 2)
         if message is not None:
             task.progress_message = message
+        # 每次进度落库都强制刷新时间戳，作为“收到阶段结果后重置超时计时器”的心跳。
+        task.updated_at = datetime.now(timezone.utc)
         await self.db.flush()
         await self.db.commit()
+
+    def _truncate_log_text(self, value: Any, max_chars: Optional[int] = None) -> str:
+        """日志文本截断，防止大文档导致日志过长。"""
+        limit = int(max_chars or getattr(settings, "LLM_IO_LOG_MAX_CHARS", LLM_IO_LOG_MAX_CHARS))
+        limit = max(500, limit)
+
+        if isinstance(value, str):
+            text = value
+        else:
+            try:
+                text = json.dumps(value, ensure_ascii=False)
+            except Exception:
+                text = str(value)
+
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}... [truncated {len(text) - limit} chars]"
+
+    def _build_structured_preview_from_chunk(self, chunk_result: Dict[str, Any]) -> Dict[str, Any]:
+        """将单个分块结果转换为可直接展示的结构化预览。"""
+        fields = chunk_result.get("fields", {}) if isinstance(chunk_result, dict) else {}
+        if not isinstance(fields, dict):
+            return {}
+
+        preview: Dict[str, Any] = {}
+        for field_name, field_obj in fields.items():
+            if not isinstance(field_obj, dict):
+                continue
+            preview[field_name] = field_obj.get("value")
+        return preview
+
+    def _parse_confidence(self, value: Any, default: float = 0.0) -> float:
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            confidence = default
+        return max(0.0, min(1.0, confidence))
+
+    def _safe_excel_header_name(self, value: Any, col_idx: int) -> str:
+        text = str(value).strip() if value is not None else ""
+        if not text:
+            text = f"column_{col_idx + 1}"
+        return text[:64]
+
+    def _collect_excel_sheet_rows(self, parse_result) -> List[Dict[str, Any]]:
+        """从解析结果中收集每个sheet的二维行数据。"""
+        sheets: List[Dict[str, Any]] = []
+
+        for page_idx, page in enumerate(parse_result.pages or [], start=1):
+            table = (page.tables or [None])[0]
+            if not isinstance(table, dict):
+                continue
+
+            headers = table.get("headers") if isinstance(table.get("headers"), list) else []
+            data_rows = table.get("rows") if isinstance(table.get("rows"), list) else []
+            all_rows = [headers] + data_rows if headers else data_rows
+
+            normalized_rows: List[List[str]] = []
+            for row in all_rows:
+                if not isinstance(row, list):
+                    continue
+                row_cells = [str(cell).strip() if cell is not None else "" for cell in row]
+                if any(cell for cell in row_cells):
+                    normalized_rows.append(row_cells)
+
+            if not normalized_rows:
+                continue
+
+            sheets.append({
+                "sheet_index": page_idx,
+                "sheet_name": str(table.get("sheet") or f"Sheet{page_idx}"),
+                "rows": normalized_rows,
+            })
+
+        return sheets
+
+    async def _detect_excel_header_row(self, adapter, llm_config, sheet_name: str, sample_rows: List[List[str]]) -> Dict[str, Any]:
+        """基于前5行让 LLM 识别表头所在行。"""
+        serialized_rows = [
+            {"row_index": idx, "cells": row}
+            for idx, row in enumerate(sample_rows, start=1)
+        ]
+
+        messages = [
+            LLMMessage(
+                role="system",
+                content=(
+                    "你是电子表格结构识别助手。你的任务是从候选行中找出最可能的字段表头行。"
+                    "仅输出JSON，不要输出解释。"
+                ),
+            ),
+            LLMMessage(
+                role="user",
+                content=(
+                    f"请分析sheet: {sheet_name} 的前{len(sample_rows)}行。\n"
+                    "规则：字段表头行通常包含字段名称，数据行通常更像数值/明细。\n"
+                    "返回JSON格式："
+                    "{\"header_row_index\": 1到5之间整数, \"confidence\": 0到1小数, \"headers\": [字符串], \"reason\": \"简短原因\"}\n"
+                    "如果无法判断，header_row_index返回1。\n\n"
+                    f"候选行数据: {json.dumps(serialized_rows, ensure_ascii=False)}"
+                ),
+            ),
+        ]
+
+        response = await adapter.chat(messages, llm_config)
+        parsed = self.prompt_engine.parse_llm_response(response.content)
+        parsed["_token_used"] = response.total_tokens or 0
+        return parsed
+
+    def _build_excel_structured_result(
+        self,
+        all_rows: List[List[str]],
+        header_row_index: int,
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        """根据识别出的表头行构建结构化列结果与行记录。"""
+        if not all_rows:
+            return {}, []
+
+        safe_index = max(1, min(header_row_index, len(all_rows)))
+        headers = all_rows[safe_index - 1]
+        max_cols = max((len(r) for r in all_rows), default=0)
+
+        normalized_headers: List[str] = []
+        used_names = set()
+        for col_idx in range(max_cols):
+            header_cell = headers[col_idx] if col_idx < len(headers) else ""
+            base_name = self._safe_excel_header_name(header_cell, col_idx)
+            final_name = base_name
+            seq = 2
+            while final_name in used_names:
+                suffix = f"_{seq}"
+                final_name = f"{base_name[:64 - len(suffix)]}{suffix}"
+                seq += 1
+            used_names.add(final_name)
+            normalized_headers.append(final_name)
+
+        records: List[Dict[str, Any]] = []
+        for row in all_rows[safe_index:]:
+            record: Dict[str, Any] = {}
+            has_value = False
+            for col_idx, field_name in enumerate(normalized_headers):
+                value = row[col_idx] if col_idx < len(row) else ""
+                value = value.strip() if isinstance(value, str) else value
+                if value == "":
+                    value = None
+                if value is not None:
+                    has_value = True
+                record[field_name] = value
+            if has_value:
+                records.append(record)
+
+        structured: Dict[str, Any] = {}
+        for field_name in normalized_headers:
+            col_values = [rec.get(field_name) for rec in records if rec.get(field_name) is not None]
+            structured[field_name] = col_values
+
+        return structured, records
+
+    async def _execute_excel_extraction(
+        self,
+        task: ExtractionTask,
+        task_id: str,
+        parse_result,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], float, int]:
+        """Excel 专用提取流程：前5行识别表头并直接落库。"""
+        await self._checkpoint_progress(task, 40.0, "Excel表头识别中...")
+
+        sheets = self._collect_excel_sheet_rows(parse_result)
+        if not sheets:
+            raise ValidationException("Excel解析结果为空，未识别到有效数据行")
+
+        adapter, llm_config = await self._resolve_task_adapter_and_config(task)
+
+        structured_result: Dict[str, Any] = {}
+        raw_sheet_results: List[Dict[str, Any]] = []
+        total_tokens = 0
+        confidences: List[float] = []
+
+        for idx, sheet in enumerate(sheets, start=1):
+            all_rows = sheet["rows"]
+            sample_rows = all_rows[:5]
+
+            infer_result = await self._detect_excel_header_row(
+                adapter,
+                llm_config,
+                sheet_name=sheet["sheet_name"],
+                sample_rows=sample_rows,
+            )
+            total_tokens += int(infer_result.get("_token_used") or 0)
+
+            header_row_index = infer_result.get("header_row_index")
+            try:
+                header_row_index = int(header_row_index)
+            except (TypeError, ValueError):
+                header_row_index = 1
+            header_row_index = max(1, min(header_row_index, min(5, len(all_rows))))
+
+            confidence = self._parse_confidence(infer_result.get("confidence"), default=0.7)
+            confidences.append(confidence)
+
+            sheet_structured, sheet_records = self._build_excel_structured_result(all_rows, header_row_index)
+
+            for key, value in sheet_structured.items():
+                merged_key = key
+                if merged_key in structured_result:
+                    merged_key = f"{sheet['sheet_name']}:{key}"[:64]
+                structured_result[merged_key] = value
+
+                ef = ExtractionField(
+                    id=str(uuid.uuid4()),
+                    task_id=task_id,
+                    field_id=None,
+                    field_name=merged_key,
+                    raw_value=json.dumps(value, ensure_ascii=False) if value is not None else None,
+                    normalized_value=json.dumps(value, ensure_ascii=False) if value is not None else None,
+                    value_type="list",
+                    confidence=confidence,
+                    is_valid=True,
+                    validation_error=None,
+                    source_text=f"sheet={sheet['sheet_name']}; header_row={header_row_index}",
+                    extraction_method="excel_header_llm",
+                )
+                self.db.add(ef)
+
+            raw_sheet_results.append({
+                "sheet_index": sheet["sheet_index"],
+                "sheet_name": sheet["sheet_name"],
+                "header_row_index": header_row_index,
+                "confidence": confidence,
+                "headers": infer_result.get("headers") if isinstance(infer_result.get("headers"), list) else [],
+                "reason": str(infer_result.get("reason") or ""),
+                "sample_rows": sample_rows,
+                "records_preview": sheet_records[:20],
+            })
+
+            await self._checkpoint_progress(
+                task,
+                40.0 + (idx / len(sheets)) * 45.0,
+                f"Excel表头识别完成（{idx}/{len(sheets)}）",
+            )
+
+        overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
+        return {
+            "stage": "completed",
+            "mode": "excel_header_row_detection",
+            "sheets": raw_sheet_results,
+            "note": "Excel仅进行前5行表头识别并直接入库，未执行全文LLM字段抽取",
+        }, structured_result, overall_confidence, total_tokens
+
+    def _finalize_merged_result(self, merged: Dict[str, Any], field_names: List[str]) -> Dict[str, Any]:
+        """最终阶段对合并结果做去重和稳定排序。"""
+        records = merged.get("records", []) if isinstance(merged, dict) else []
+        deduped_records: List[Dict[str, Any]] = []
+        seen_record_keys = set()
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict):
+                continue
+            normalized_record = {k: record.get(k) for k in field_names}
+            rec_key = self._stable_dump(normalized_record)
+            if rec_key in seen_record_keys:
+                continue
+            seen_record_keys.add(rec_key)
+            deduped_records.append(normalized_record)
+
+        deduped_records.sort(key=lambda item: self._stable_dump(item))
+
+        merged_fields = merged.get("fields", {}) if isinstance(merged, dict) else {}
+        finalized_fields: Dict[str, Dict[str, Any]] = {}
+        for field_name in field_names:
+            field_obj = merged_fields.get(field_name, {}) if isinstance(merged_fields, dict) else {}
+            if not isinstance(field_obj, dict):
+                field_obj = {}
+
+            value = field_obj.get("value")
+            if isinstance(value, list):
+                deduped_values: List[Any] = []
+                seen_value_keys = set()
+                for item in value:
+                    value_key = self._stable_dump(item)
+                    if value_key in seen_value_keys:
+                        continue
+                    seen_value_keys.add(value_key)
+                    deduped_values.append(item)
+                deduped_values.sort(key=lambda item: self._stable_dump(item))
+                normalized_value: Any = deduped_values
+            else:
+                normalized_value = value
+
+            finalized_fields[field_name] = {
+                "value": normalized_value,
+                "confidence": field_obj.get("confidence", 0.0),
+                "source_text": field_obj.get("source_text", ""),
+            }
+
+        return {
+            "fields": finalized_fields,
+            "records": deduped_records,
+            "extraction_notes": merged.get("extraction_notes", "") if isinstance(merged, dict) else "",
+        }
 
     async def _resolve_task_adapter_and_config(self, task: ExtractionTask):
         """解析提取任务的 LLM 适配器与配置。
@@ -260,6 +568,50 @@ class ExtractionService:
 
             await self._checkpoint_progress(task, 30.0, "文档解析完成")
 
+            is_excel_doc = normalized_mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+            result_row_query = await self.db.execute(
+                select(ExtractionResult).where(ExtractionResult.task_id == task_id)
+            )
+            extraction_result = result_row_query.scalar_one_or_none()
+            if not extraction_result:
+                extraction_result = ExtractionResult(
+                    id=str(uuid.uuid4()),
+                    task_id=task_id,
+                    raw_result={
+                        "stage": "processing",
+                    },
+                    structured_result={},
+                    overall_confidence=0.0,
+                    validation_status="pending",
+                )
+                self.db.add(extraction_result)
+                await self.db.flush()
+                await self.db.commit()
+
+            if is_excel_doc:
+                raw_result, structured_result, overall_confidence, token_used = await self._execute_excel_extraction(
+                    task,
+                    task_id,
+                    parse_result,
+                )
+
+                extraction_result.raw_result = raw_result
+                extraction_result.structured_result = structured_result
+                extraction_result.overall_confidence = overall_confidence
+
+                task.token_used = token_used
+                task.status = TaskStatus.COMPLETED
+                task.completed_at = datetime.now(timezone.utc)
+                task.progress = 100.0
+                task.progress_message = "提取完成（Excel表头识别）"
+                task.processing_time_ms = int((time.time() - start_time) * 1000)
+
+                await self._log(task_id, "info", "extraction_complete", f"Excel表头识别完成，置信度: {overall_confidence:.2f}")
+                await self.db.flush()
+                await self.db.commit()
+                return task
+
             # 获取模板和字段
             tmpl_result = await self.db.execute(
                 select(Template).where(Template.id == task.template_id)
@@ -295,6 +647,16 @@ class ExtractionService:
             total_chunks = len(content_chunks)
             total_calls = max(1, total_chunks * cross_validate_rounds)
             completed_calls = 0
+
+            extraction_result.raw_result = {
+                "stage": "processing",
+                "total_chunks": total_chunks,
+                "processed_chunks": 0,
+                "partial_chunks": [],
+            }
+            await self.db.flush()
+            await self.db.commit()
+
             for idx, chunk_content in enumerate(content_chunks, start=1):
                 if total_chunks > 1:
                     chunk_content = (
@@ -322,7 +684,29 @@ class ExtractionService:
                         few_shot_examples=template.few_shot_examples,
                     )
 
+                    logger.info(
+                        "llm_input task_id=%s chunk=%s/%s round=%s/%s model=%s messages=%s",
+                        task_id,
+                        idx,
+                        total_chunks,
+                        round_idx,
+                        cross_validate_rounds,
+                        llm_config.model,
+                        self._truncate_log_text(messages),
+                    )
+
                     llm_response = await adapter.chat(messages, llm_config)
+                    logger.info(
+                        "llm_output task_id=%s chunk=%s/%s round=%s/%s model=%s tokens=%s content=%s",
+                        task_id,
+                        idx,
+                        total_chunks,
+                        round_idx,
+                        cross_validate_rounds,
+                        llm_config.model,
+                        llm_response.total_tokens,
+                        self._truncate_log_text(llm_response.content),
+                    )
                     total_tokens += llm_response.total_tokens or 0
                     parsed_round = self.prompt_engine.parse_llm_response(llm_response.content)
                     current_chunk_round_results.append(parsed_round)
@@ -335,13 +719,36 @@ class ExtractionService:
                     )
 
                 chunk_round_parsed.append(current_chunk_round_results)
-                parsed_chunks.append(
-                    self._consensus_chunk_parsed_results(
-                        current_chunk_round_results,
-                        [f.name for f in template.fields],
-                        min_agreement,
-                    )
+                chunk_consensus = self._consensus_chunk_parsed_results(
+                    current_chunk_round_results,
+                    [f.name for f in template.fields],
+                    min_agreement,
                 )
+                parsed_chunks.append(chunk_consensus)
+
+                partial_chunks = list((extraction_result.raw_result or {}).get("partial_chunks", []))
+                chunk_preview = {
+                    "chunk_index": idx,
+                    "chunk_total": total_chunks,
+                    "fields": self._build_structured_preview_from_chunk(chunk_consensus),
+                    "records": chunk_consensus.get("records", []),
+                }
+                partial_chunks.append(chunk_preview)
+                if len(partial_chunks) > 200:
+                    partial_chunks = partial_chunks[-200:]
+
+                extraction_result.raw_result = {
+                    "stage": "processing",
+                    "total_chunks": total_chunks,
+                    "processed_chunks": idx,
+                    "partial_chunks": partial_chunks,
+                    "latest_chunk": chunk_preview,
+                    "cross_validate_rounds": cross_validate_rounds,
+                    "min_agreement": min_agreement,
+                }
+                extraction_result.structured_result = chunk_preview["fields"]
+                await self.db.flush()
+                await self.db.commit()
 
             task.token_used = total_tokens
 
@@ -349,6 +756,7 @@ class ExtractionService:
                 parsed_chunks,
                 [f.name for f in template.fields],
             )
+            parsed = self._finalize_merged_result(parsed, [f.name for f in template.fields])
             extracted_fields = parsed.get("fields", {})
             records = parsed.get("records", [])
             records = records if isinstance(records, list) else []
@@ -414,21 +822,16 @@ class ExtractionService:
             await self._checkpoint_progress(task, 90.0, "正在保存提取结果...")
 
             # 保存汇总结果
-            extraction_result = ExtractionResult(
-                id=str(uuid.uuid4()),
-                task_id=task_id,
-                raw_result={
-                    "chunk_rounds": chunk_round_parsed,
-                    "chunks": parsed_chunks,
-                    "merged": parsed,
-                    "cross_validate_rounds": cross_validate_rounds,
-                    "min_agreement": min_agreement,
-                },
-                structured_result=structured_result,
-                overall_confidence=overall_confidence,
-                validation_status="pending",
-            )
-            self.db.add(extraction_result)
+            extraction_result.raw_result = {
+                "stage": "completed",
+                "chunk_rounds": chunk_round_parsed,
+                "chunks": parsed_chunks,
+                "merged": parsed,
+                "cross_validate_rounds": cross_validate_rounds,
+                "min_agreement": min_agreement,
+            }
+            extraction_result.structured_result = structured_result
+            extraction_result.overall_confidence = overall_confidence
 
             task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.now(timezone.utc)

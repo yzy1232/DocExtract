@@ -10,10 +10,11 @@ from sqlalchemy import select, func, or_, delete
 from sqlalchemy.orm import selectinload
 from app.models.template import Template, TemplateField, TemplateVersion, TemplateCategory, TemplateStatus, FieldType
 from app.models.document import Document, DocumentStatus
+from app.models.system import LLMConfig as LLMConfigModel, SystemConfig
 from app.schemas.template import TemplateCreate, TemplateUpdate, TemplateCategoryCreate
 from app.core.exceptions import NotFoundException, ValidationException
 from app.llm.base_adapter import LLMMessage
-from app.llm.factory import get_default_adapter, get_default_llm_config
+from app.llm.factory import get_default_adapter, get_default_llm_config, create_adapter_from_db_config
 from app.core.storage import storage
 from app.processors.factory import get_processor
 from app.processors.mime_resolver import normalize_mime_type
@@ -22,6 +23,39 @@ from app.processors.mime_resolver import normalize_mime_type
 class TemplateService:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def _resolve_infer_adapter_and_config(self):
+        """模板自动提取优先使用系统默认 LLM 配置，回退到环境默认。"""
+        llm_config = get_default_llm_config()
+
+        try:
+            sc_result = await self.db.execute(
+                select(SystemConfig).where(SystemConfig.key == "default_llm_config_id")
+            )
+            sc = sc_result.scalar_one_or_none()
+            default_cfg_id = sc.value if sc and sc.value else None
+
+            if default_cfg_id:
+                cfg_result = await self.db.execute(
+                    select(LLMConfigModel).where(
+                        LLMConfigModel.id == default_cfg_id,
+                        LLMConfigModel.is_active == True,
+                    )
+                )
+                cfg = cfg_result.scalar_one_or_none()
+                if cfg and cfg.api_key_encrypted and cfg.base_url:
+                    llm_config.model = cfg.model_name or llm_config.model
+                    adapter = create_adapter_from_db_config(
+                        cfg.api_key_encrypted,
+                        cfg.base_url,
+                        provider=cfg.provider,
+                        model=llm_config.model,
+                    )
+                    return adapter, llm_config
+        except Exception:
+            pass
+
+        return get_default_adapter(), llm_config
 
     async def create(self, data: TemplateCreate, creator_id: str) -> Template:
         """创建模板"""
@@ -270,8 +304,7 @@ class TemplateService:
         inferred_desc = (description or "").strip() or f"基于文档《{document.display_name or document.name}》自动生成"
 
         try:
-            adapter = get_default_adapter()
-            llm_config = get_default_llm_config()
+            adapter, llm_config = await self._resolve_infer_adapter_and_config()
             llm_config.temperature = 0.1
             llm_config.max_tokens = min(llm_config.max_tokens, 1800)
 
@@ -292,6 +325,22 @@ class TemplateService:
             inferred_name = (parsed.get("name") or inferred_name).strip() or inferred_name
             inferred_desc = (parsed.get("description") or inferred_desc).strip() or inferred_desc
             inferred_fields = parsed.get("fields") or []
+
+            # 第二轮校验：让模型基于文档内容修正字段定义，减少幻觉字段。
+            verify_prompt = self._build_verify_prompt(sample_text, inferred_name, inferred_desc, inferred_fields, max_fields)
+            verify_messages = [
+                LLMMessage(
+                    role="system",
+                    content=(
+                        "你是资深信息抽取QA工程师。请严格检查字段定义是否能从文档稳定提取，"
+                        "输出必须是严格 JSON。"
+                    ),
+                ),
+                LLMMessage(role="user", content=verify_prompt),
+            ]
+            verify_response = await adapter.chat(verify_messages, llm_config)
+            verified = self._parse_infer_response(verify_response.content)
+            inferred_fields = verified.get("fields") or inferred_fields
         except Exception:
             inferred_fields = self._fallback_fields_from_text(sample_text, max_fields)
 
@@ -336,6 +385,45 @@ class TemplateService:
             "1) 字段名必须可读且唯一。\n"
             "2) 只输出文档中可能稳定出现的关键字段。\n"
             "3) 不要输出任何 JSON 之外内容。\n\n"
+            "文档内容如下:\n"
+            f"{doc_text}"
+        )
+
+    def _build_verify_prompt(
+        self,
+        doc_text: str,
+        template_name: str,
+        description: str,
+        fields: List[Dict[str, Any]],
+        max_fields: int,
+    ) -> str:
+        allowed_types = ", ".join([t.value for t in FieldType])
+        return (
+            "请对以下模板字段进行准确性校验，并输出修正后的字段列表。\n"
+            "校验要求:\n"
+            "1) 删除无法从文档稳定提取的字段；\n"
+            "2) 修正字段类型与字段名；\n"
+            "3) 字段名必须唯一且可读；\n"
+            f"4) 最多保留 {max_fields} 个字段；\n"
+            f"5) 字段类型只能使用: {allowed_types}。\n\n"
+            f"模板名: {template_name}\n"
+            f"模板描述: {description}\n"
+            f"候选字段: {json.dumps(fields, ensure_ascii=False)}\n\n"
+            "输出 JSON 格式:\n"
+            "{\n"
+            "  \"name\": \"模板名称\",\n"
+            "  \"description\": \"模板描述\",\n"
+            "  \"fields\": [\n"
+            "    {\n"
+            "      \"name\": \"field_key\",\n"
+            "      \"display_name\": \"字段显示名\",\n"
+            "      \"field_type\": \"text\",\n"
+            "      \"description\": \"字段含义\",\n"
+            "      \"required\": false,\n"
+            "      \"extraction_hints\": \"提取提示\"\n"
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
             "文档内容如下:\n"
             f"{doc_text}"
         )

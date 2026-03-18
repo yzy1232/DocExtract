@@ -448,7 +448,7 @@ async def create_user(
 
     db.add(user)
     await db.flush()
-    await db.refresh(user, attribute_names=['roles'])
+    await db.refresh(user, attribute_names=['roles', 'created_at', 'updated_at'])
     return ResponseBase(data=_serialize_user(user))
 
 
@@ -491,7 +491,7 @@ async def update_user(
             user.roles = []
 
     await db.flush()
-    await db.refresh(user, attribute_names=['roles'])
+    await db.refresh(user, attribute_names=['roles', 'created_at', 'updated_at', 'last_login_at'])
     return ResponseBase(data=_serialize_user(user))
 
 

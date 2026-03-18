@@ -118,6 +118,12 @@ router.beforeEach(async (to, from, next) => {
     return
   }
 
+  // 检查管理员权限
+  if (to.meta.adminOnly && !authStore.isAdmin) {
+    next({ name: 'Dashboard' })
+    return
+  }
+
   next()
 })
 

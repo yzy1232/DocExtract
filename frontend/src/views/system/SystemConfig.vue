@@ -258,7 +258,14 @@ const userForm = reactive({
 })
 
 const userRules = {
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  username: [
+    { required: true, message: '请输入用户名', trigger: 'blur' },
+    {
+      pattern: /^[a-zA-Z0-9_-]+$/,
+      message: '用户名只能包含字母、数字、下划线和连字符',
+      trigger: 'blur',
+    },
+  ],
   email: [{ required: true, message: '请输入邮箱', trigger: 'blur' }],
   password: [
     {
@@ -273,6 +280,18 @@ const userRules = {
         }
         if (value.length < 8) {
           callback(new Error('密码至少8位'))
+          return
+        }
+        if (!/[A-Z]/.test(value)) {
+          callback(new Error('密码必须包含至少一个大写字母'))
+          return
+        }
+        if (!/[a-z]/.test(value)) {
+          callback(new Error('密码必须包含至少一个小写字母'))
+          return
+        }
+        if (!/\d/.test(value)) {
+          callback(new Error('密码必须包含至少一个数字'))
           return
         }
         callback()
@@ -511,8 +530,9 @@ async function saveUser() {
     }
     userDialogVisible.value = false
     loadUsers()
-  } catch {
-    ElMessage.error('保存失败，请检查输入')
+  } catch (error) {
+    const errorMsg = error?.response?.data?.detail || error?.message || '保存失败，请检查输入'
+    ElMessage.error(errorMsg)
   } finally {
     userSaving.value = false
   }

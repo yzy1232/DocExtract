@@ -3,16 +3,7 @@
 """
 import asyncio
 from app.tasks.celery_app import celery_app
-
-
-_worker_loop = None
-
-
-def _get_worker_loop():
-    global _worker_loop
-    if _worker_loop is None or _worker_loop.is_closed():
-        _worker_loop = asyncio.new_event_loop()
-    return _worker_loop
+from app.core.exceptions import NotFoundException
 
 
 @celery_app.task(
@@ -41,8 +32,10 @@ def run_extraction_task(self, task_id: str):
                 raise
 
     try:
-        loop = _get_worker_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_run())
+        # 每次任务独立创建事件循环，避免 prefork 子进程复用旧 loop 导致跨 loop 错误。
+        asyncio.run(_run())
+    except NotFoundException:
+        # 任务已被删除或不存在时不重试，避免无效重试污染队列。
+        return
     except Exception as exc:
         raise self.retry(exc=exc, countdown=2 ** self.request.retries * 60)

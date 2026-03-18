@@ -56,12 +56,13 @@
 
       <!-- 提取字段结果 -->
       <el-col :span="16">
-        <el-card shadow="never" v-if="task.status === 'completed'">
+        <el-card shadow="never" v-if="task.status === 'completed' || fieldResults.length > 0">
           <template #header>
             <div style="display:flex;align-items:center;gap:12px">
-              <span>提取结果</span>
+              <span>{{ task.status === 'completed' ? '提取结果' : '分块结果预览' }}</span>
               <el-tag size="small" type="info">{{ matrixColumns.length }} 个字段</el-tag>
               <el-tag size="small" type="success">{{ matrixRows.length }} 条记录</el-tag>
+              <el-tag v-if="task.status !== 'completed'" size="small" type="warning">处理中</el-tag>
             </div>
           </template>
 
@@ -203,10 +204,11 @@ async function loadTask() {
         }))
       : []
 
-    if (task.value.status === 'completed') {
+    let previewRows = []
+    try {
       const rRes = await extractionApi.getResults(route.params.id)
       const resultData = rRes.data || {}
-      const structuredRows = resultData.structured_result && typeof resultData.structured_result === 'object'
+      previewRows = resultData.structured_result && typeof resultData.structured_result === 'object'
         ? Object.entries(resultData.structured_result).map(([key, value]) => ({
             field_name: key,
             field_label: key,
@@ -215,10 +217,14 @@ async function loadTask() {
             is_valid: null,
           }))
         : []
+    } catch {
+      previewRows = []
+    }
 
-      fieldResults.value = structuredRows.length > 0 ? structuredRows : taskFieldResults
+    if (task.value.status === 'completed') {
+      fieldResults.value = previewRows.length > 0 ? previewRows : taskFieldResults
     } else {
-      fieldResults.value = []
+      fieldResults.value = previewRows
     }
   } catch {
     ElMessage.error('加载任务失败')

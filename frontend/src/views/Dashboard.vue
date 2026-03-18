@@ -112,9 +112,11 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 import { systemApi } from '@/api/index'
 
 const router = useRouter()
+const authStore = useAuthStore()
 const stats = ref({})
 const health = ref({ database: 'unknown', cache: 'unknown' })
 
@@ -141,14 +143,23 @@ const overallHealthLabel = computed(() => {
 
 onMounted(async () => {
   try {
-    const [statsRes, healthRes] = await Promise.all([
-      systemApi.stats(),
-      systemApi.health(),
-    ])
-    stats.value = statsRes.data
-    health.value = healthRes.data
-  } catch {
-    // 忽略
+    // 仅管理员可调用 stats API
+    const requests = [systemApi.health()]
+    if (authStore.isAdmin) {
+      requests.unshift(systemApi.stats())
+    }
+    
+    const results = await Promise.all(requests)
+    
+    if (authStore.isAdmin) {
+      stats.value = results[0].data
+      health.value = results[1].data
+    } else {
+      health.value = results[0].data
+    }
+  } catch (error) {
+    // 非管理员用户会在此忽略 stats 错误
+    console.debug('Dashboard 数据加载失败', error?.message)
   }
 })
 </script>

@@ -178,11 +178,28 @@ async def get_extraction_results(
     from app.models.extraction import ExtractionResult
     from app.core.exceptions import NotFoundException
     svc = ExtractionService(db)
+    task = await svc.get_task_by_id(task_id)
+    if not current_user.is_superuser and task.creator_id != current_user.id:
+        raise ForbiddenException("无权限查看该任务结果")
+
     result = await db.execute(
         select(ExtractionResult).where(ExtractionResult.task_id == task_id)
     )
     er = result.scalar_one_or_none()
     if not er:
+        # 任务处理中尚未生成最终结果时，返回占位结果，避免前端误判“任务不存在”。
+        if task.status in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING, TaskStatus.RETRYING):
+            return ResponseBase(data=ExtractionResultOut(
+                id=f"pending-{task_id}",
+                task_id=task_id,
+                structured_result={},
+                overall_confidence=None,
+                validation_status="pending",
+                validation_notes=None,
+                export_url=None,
+                created_at=task.created_at,
+                updated_at=task.updated_at,
+            ))
         raise NotFoundException("提取结果", task_id)
     return ResponseBase(data=ExtractionResultOut.model_validate(er))
 
