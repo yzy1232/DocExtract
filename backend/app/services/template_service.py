@@ -1,12 +1,13 @@
 """
 模板服务 - 模板 CRUD、版本管理、提示词生成
 """
+import asyncio
 import uuid
 import json
 import ast
 import re
 import logging
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, Callable, Awaitable
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, delete
 from sqlalchemy.orm import selectinload
@@ -18,11 +19,18 @@ from app.core.exceptions import NotFoundException, ValidationException
 from app.llm.base_adapter import LLMMessage
 from app.llm.factory import get_default_adapter, get_default_llm_config, create_adapter_from_db_config
 from app.core.storage import storage
+from app.config import settings
 from app.processors.factory import get_processor
 from app.processors.mime_resolver import normalize_mime_type
 
 
 TEMPLATE_LLM_LOG_MAX_CHARS = 4000
+TEMPLATE_INFER_CHUNK_SIZE = 3000
+TEMPLATE_INFER_CHUNK_OVERLAP = 500
+TEMPLATE_INFER_MAX_CHUNKS = 6
+TEMPLATE_INFER_CHUNK_MAX_FIELDS = 8
+TEMPLATE_INFER_VERIFY_TEXT_LIMIT = 12000
+TEMPLATE_INFER_CHUNK_CONCURRENCY = 3
 logger = logging.getLogger(__name__)
 
 
@@ -289,7 +297,8 @@ class TemplateService:
         requester_is_superuser: bool,
         template_name: Optional[str] = None,
         description: Optional[str] = None,
-        max_fields: int = 20,
+        max_fields: int = 50,
+        on_chunk_done: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
         query = select(Document).where(
             Document.id == document_id,
@@ -316,16 +325,29 @@ class TemplateService:
         if not full_text:
             raise ValidationException("文档内容为空，无法自动生成模板")
 
-        sample_text = full_text[:12000]
+        chunk_size = max(1000, int(getattr(settings, "TEMPLATE_INFER_CHUNK_SIZE", TEMPLATE_INFER_CHUNK_SIZE)))
+        chunk_overlap = max(0, int(getattr(settings, "TEMPLATE_INFER_CHUNK_OVERLAP", TEMPLATE_INFER_CHUNK_OVERLAP)))
+        max_chunks = max(1, int(getattr(settings, "TEMPLATE_INFER_MAX_CHUNKS", TEMPLATE_INFER_MAX_CHUNKS)))
+        text_chunks = self._split_text_with_overlap(full_text, chunk_size, chunk_overlap)
+        selected_chunks = text_chunks[:max_chunks]
+        sample_text = self._build_chunk_context_text(
+            selected_chunks,
+            max_chars=TEMPLATE_INFER_VERIFY_TEXT_LIMIT,
+        )
         inferred_fields: List[Dict[str, Any]] = []
         inferred_name = (template_name or "").strip() or self._default_template_name(document.name)
         inferred_desc = (description or "").strip() or f"基于文档《{document.display_name or document.name}》自动生成"
 
         logger.info(
-            "模板自动推断开始: document_id=%s requester_id=%s mime_type=%s sample_text_len=%s max_fields=%s",
+            "模板自动推断开始: document_id=%s requester_id=%s mime_type=%s doc_len=%s chunk_size=%s overlap=%s total_chunks=%s selected_chunks=%s sample_text_len=%s max_fields=%s",
             document_id,
             requester_id,
             mime_type,
+            len(full_text),
+            chunk_size,
+            chunk_overlap,
+            len(text_chunks),
+            len(selected_chunks),
             len(sample_text),
             max_fields,
         )
@@ -351,42 +373,98 @@ class TemplateService:
             llm_config.temperature = 0.1
             llm_config.max_tokens = min(llm_config.max_tokens, 1800)
 
-            prompt = self._build_infer_prompt(sample_text, inferred_name, inferred_desc, max_fields)
-            logger.info(
-                "模板自动推断模型调用输入(第一轮): document_id=%s provider=%s model=%s prompt=%s",
-                document_id,
-                getattr(adapter, "provider_name", "unknown"),
-                llm_config.model,
-                self._truncate_log_text(prompt),
-            )
-            messages = [
-                LLMMessage(
-                    role="system",
-                    content=(
-                        "你是资深文档结构化工程师。请根据文档内容设计信息提取模板字段。"
-                        "输出必须是严格 JSON，不要包含代码块标记或额外解释。"
-                    ),
+            chunk_field_cap = max(
+                1,
+                min(
+                    int(getattr(settings, "TEMPLATE_INFER_CHUNK_MAX_FIELDS", TEMPLATE_INFER_CHUNK_MAX_FIELDS)),
+                    max_fields,
                 ),
-                LLMMessage(role="user", content=prompt),
+            )
+            candidate_field_limit = max_fields * 3
+            inferred_fields = []
+            chunk_total = len(selected_chunks)
+            chunk_concurrency = max(
+                1,
+                int(getattr(settings, "TEMPLATE_INFER_CHUNK_CONCURRENCY", TEMPLATE_INFER_CHUNK_CONCURRENCY)),
+            )
+            logger.info(
+                "模板自动推断启动异步分块执行: document_id=%s chunk_total=%s chunk_concurrency=%s",
+                document_id,
+                chunk_total,
+                chunk_concurrency,
+            )
+
+            semaphore = asyncio.Semaphore(chunk_concurrency)
+            chunk_tasks = [
+                asyncio.create_task(
+                    self._infer_single_chunk_fields(
+                        chunk_index=chunk_idx,
+                        chunk_total=chunk_total,
+                        chunk_text=chunk_text,
+                        inferred_name=inferred_name,
+                        inferred_desc=inferred_desc,
+                        chunk_field_cap=chunk_field_cap,
+                        adapter=adapter,
+                        llm_config=llm_config,
+                        document_id=document_id,
+                        semaphore=semaphore,
+                    )
+                )
+                for chunk_idx, chunk_text in enumerate(selected_chunks, start=1)
             ]
 
-            response = await adapter.chat(messages, llm_config)
-            logger.info(
-                "模板自动推断模型调用输出(第一轮): document_id=%s total_tokens=%s content=%s",
-                document_id,
-                response.total_tokens,
-                self._truncate_log_text(response.content),
-            )
-            parsed = await self._parse_or_repair_infer_response(
-                adapter=adapter,
-                llm_config=llm_config,
-                raw_content=response.content,
-                document_id=document_id,
-                stage="第一轮",
-            )
-            inferred_name = (parsed.get("name") or inferred_name).strip() or inferred_name
-            inferred_desc = (parsed.get("description") or inferred_desc).strip() or inferred_desc
-            inferred_fields = parsed.get("fields") or []
+            chunk_result_map: Dict[int, Dict[str, Any]] = {}
+            processed_chunks = 0
+            try:
+                for done in asyncio.as_completed(chunk_tasks):
+                    chunk_result = await done
+                    chunk_idx = chunk_result["chunk_index"]
+                    chunk_result_map[chunk_idx] = chunk_result
+                    processed_chunks += 1
+
+                    parsed = chunk_result["parsed"]
+                    if chunk_idx == 1:
+                        inferred_name = (parsed.get("name") or inferred_name).strip() or inferred_name
+                        inferred_desc = (parsed.get("description") or inferred_desc).strip() or inferred_desc
+
+                    chunk_fields = chunk_result["chunk_fields"]
+                    inferred_fields = self._merge_inferred_field_candidates(
+                        inferred_fields,
+                        chunk_fields,
+                        candidate_field_limit,
+                    )
+
+                    logger.info(
+                        "模板自动推断分块聚合进度: document_id=%s done=%s/%s chunk=%s/%s chunk_fields=%s aggregated_fields=%s",
+                        document_id,
+                        processed_chunks,
+                        chunk_total,
+                        chunk_idx,
+                        chunk_total,
+                        len(chunk_fields),
+                        len(inferred_fields),
+                    )
+
+                    await self._emit_infer_chunk_progress(
+                        on_chunk_done,
+                        {
+                            "stage": "chunk_done",
+                            "document_id": document_id,
+                            "chunk_index": chunk_idx,
+                            "chunk_total": chunk_total,
+                            "processed_chunks": processed_chunks,
+                            "progress_percent": round((processed_chunks / max(1, chunk_total)) * 100, 2),
+                            "chunk_fields": chunk_fields,
+                            "aggregated_fields": self._sanitize_inferred_fields(inferred_fields, max_fields),
+                            "name": inferred_name,
+                            "description": inferred_desc,
+                        },
+                    )
+            except Exception:
+                for task in chunk_tasks:
+                    if not task.done():
+                        task.cancel()
+                raise
 
             # 第二轮校验：让模型基于文档内容修正字段定义，减少幻觉字段。
             verify_prompt = self._build_verify_prompt(sample_text, inferred_name, inferred_desc, inferred_fields, max_fields)
@@ -431,13 +509,13 @@ class TemplateService:
                     verify_err,
                 )
         except Exception as e:
-            logger.exception("模板自动推断模型调用失败，使用规则兜底: document_id=%s error=%s", document_id, e)
-            inferred_fields = self._fallback_fields_from_text(sample_text, max_fields)
+            logger.exception("模板自动推断模型调用失败，直接返回失败: document_id=%s error=%s", document_id, e)
+            raise ValidationException(f"模板自动推断失败: {e}")
 
         cleaned_fields = self._sanitize_inferred_fields(inferred_fields, max_fields)
         if not cleaned_fields:
-            logger.warning("模板自动推断清洗后字段为空，使用规则兜底: document_id=%s", document_id)
-            cleaned_fields = self._fallback_fields_from_text(sample_text, max_fields)
+            logger.warning("模板自动推断清洗后字段为空，直接返回失败: document_id=%s", document_id)
+            raise ValidationException("模板自动推断失败：未生成有效字段")
 
         logger.info(
             "模板自动推断完成: document_id=%s template_name=%s field_count=%s",
@@ -446,11 +524,179 @@ class TemplateService:
             len(cleaned_fields),
         )
 
+        await self._emit_infer_chunk_progress(
+            on_chunk_done,
+            {
+                "stage": "completed",
+                "document_id": document_id,
+                "progress_percent": 100.0,
+                "name": inferred_name,
+                "description": inferred_desc,
+                "fields": cleaned_fields,
+            },
+        )
+
         return {
             "name": inferred_name,
             "description": inferred_desc,
             "fields": cleaned_fields,
         }
+
+    async def _emit_infer_chunk_progress(
+        self,
+        callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+        payload: Dict[str, Any],
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            await callback(payload)
+        except Exception as e:
+            logger.warning("模板自动推断进度回调失败: error=%s", e)
+
+    async def _infer_single_chunk_fields(
+        self,
+        chunk_index: int,
+        chunk_total: int,
+        chunk_text: str,
+        inferred_name: str,
+        inferred_desc: str,
+        chunk_field_cap: int,
+        adapter,
+        llm_config,
+        document_id: str,
+        semaphore: asyncio.Semaphore,
+    ) -> Dict[str, Any]:
+        """异步执行单个分块推断。"""
+        async with semaphore:
+            prompt = self._build_infer_prompt(chunk_text, inferred_name, inferred_desc, chunk_field_cap)
+            logger.info(
+                "模板自动推断模型调用输入(第一轮分块): document_id=%s chunk=%s/%s provider=%s model=%s prompt=%s",
+                document_id,
+                chunk_index,
+                chunk_total,
+                getattr(adapter, "provider_name", "unknown"),
+                llm_config.model,
+                self._truncate_log_text(prompt),
+            )
+            messages = [
+                LLMMessage(
+                    role="system",
+                    content=(
+                        "你是资深文档结构化工程师。请根据文档内容设计信息提取模板字段。"
+                        "输出必须是严格 JSON，不要包含代码块标记或额外解释。"
+                    ),
+                ),
+                LLMMessage(role="user", content=prompt),
+            ]
+
+            response = await adapter.chat(messages, llm_config)
+            logger.info(
+                "模板自动推断模型调用输出(第一轮分块): document_id=%s chunk=%s/%s total_tokens=%s content=%s",
+                document_id,
+                chunk_index,
+                chunk_total,
+                response.total_tokens,
+                self._truncate_log_text(response.content),
+            )
+
+            parsed = await self._parse_or_repair_infer_response(
+                adapter=adapter,
+                llm_config=llm_config,
+                raw_content=response.content,
+                document_id=document_id,
+                stage=f"第一轮分块{chunk_index}",
+            )
+            chunk_fields = self._sanitize_inferred_fields(parsed.get("fields") or [], chunk_field_cap)
+            return {
+                "chunk_index": chunk_index,
+                "parsed": parsed,
+                "chunk_fields": chunk_fields,
+            }
+
+    def _split_text_with_overlap(self, text: str, chunk_size: int, overlap: int) -> List[str]:
+        """将长文本按固定窗口切片，并保留重叠区域降低漏字段风险。"""
+        if not text:
+            return [""]
+        if chunk_size <= 0:
+            return [text]
+
+        overlap = max(0, min(overlap, chunk_size - 1))
+        chunks: List[str] = []
+        start = 0
+        text_len = len(text)
+
+        while start < text_len:
+            end = min(start + chunk_size, text_len)
+            chunks.append(text[start:end])
+            if end >= text_len:
+                break
+            start = end - overlap
+
+        return chunks
+
+    def _build_chunk_context_text(self, chunks: List[str], max_chars: int) -> str:
+        """构建带切片标记的文档上下文，供校验轮统一使用。"""
+        if not chunks:
+            return ""
+
+        max_chars = max(1000, int(max_chars or TEMPLATE_INFER_VERIFY_TEXT_LIMIT))
+        parts: List[str] = []
+        total = 0
+        chunk_total = len(chunks)
+        for idx, chunk in enumerate(chunks, start=1):
+            if total >= max_chars:
+                break
+            header = f"[文档切片 {idx}/{chunk_total}]\n"
+            remain = max_chars - total - len(header)
+            if remain <= 0:
+                break
+            body = chunk[:remain]
+            segment = f"{header}{body}\n"
+            parts.append(segment)
+            total += len(segment)
+
+        return "\n".join(parts)
+
+    def _merge_inferred_field_candidates(
+        self,
+        existing_fields: List[Dict[str, Any]],
+        incoming_fields: List[Dict[str, Any]],
+        max_candidates: int,
+    ) -> List[Dict[str, Any]]:
+        """合并分块字段候选并去重，控制校验轮输入规模。"""
+        merged = list(existing_fields or [])
+        seen_names = {
+            str(item.get("name") or "").strip().lower()
+            for item in merged
+            if isinstance(item, dict)
+        }
+        seen_display = {
+            str(item.get("display_name") or "").strip().lower()
+            for item in merged
+            if isinstance(item, dict)
+        }
+
+        for item in incoming_fields or []:
+            if not isinstance(item, dict):
+                continue
+            name_key = str(item.get("name") or "").strip().lower()
+            display_key = str(item.get("display_name") or "").strip().lower()
+            if name_key and name_key in seen_names:
+                continue
+            if display_key and display_key in seen_display:
+                continue
+
+            merged.append(item)
+            if name_key:
+                seen_names.add(name_key)
+            if display_key:
+                seen_display.add(display_key)
+
+            if len(merged) >= max_candidates:
+                break
+
+        return merged
 
     def _default_template_name(self, filename: str) -> str:
         base = (filename or "未命名文档").rsplit(".", 1)[0].strip()

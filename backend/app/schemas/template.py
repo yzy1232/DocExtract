@@ -152,7 +152,7 @@ class TemplateInferRequest(BaseModel):
     document_id: str = Field(min_length=1, description="已解析完成的文档ID")
     template_name: Optional[str] = Field(default=None, max_length=128, description="期望模板名称")
     description: Optional[str] = Field(default=None, description="期望模板描述")
-    max_fields: int = Field(default=20, ge=1, le=200, description="建议字段上限")
+    max_fields: int = Field(default=50, ge=1, le=200, description="建议字段上限")
 
 
 class TemplateInferFieldOut(BaseModel):

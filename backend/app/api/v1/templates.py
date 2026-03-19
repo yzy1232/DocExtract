@@ -1,9 +1,12 @@
 """
 模板管理 API
 """
+import asyncio
+import json
 import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.schemas.template import (
@@ -68,7 +71,84 @@ async def infer_template_from_document(
         inferred.get("name"),
         len(inferred.get("fields") or []),
     )
-    return ResponseBase(data=TemplateInferOut.model_validate(inferred))
+    infer_out = TemplateInferOut.model_validate(inferred)
+    logger.info(
+        "模板自动推断返回摘要: document_id=%s name=%s fields_type=%s field_count=%s first_field=%s",
+        data.document_id,
+        infer_out.name,
+        type(infer_out.fields).__name__,
+        len(infer_out.fields),
+        infer_out.fields[0].model_dump() if infer_out.fields else None,
+    )
+    return ResponseBase(data=infer_out)
+
+
+@router.post("/infer-from-document/stream", summary="从文档自动推断模板（流式）")
+async def infer_template_from_document_stream(
+    data: TemplateInferRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    logger.info(
+        "模板自动推断流式请求: user_id=%s document_id=%s max_fields=%s template_name=%s",
+        current_user.id,
+        data.document_id,
+        data.max_fields,
+        data.template_name,
+    )
+
+    svc = TemplateService(db)
+    queue: asyncio.Queue[dict] = asyncio.Queue()
+
+    async def on_chunk_done(payload: dict):
+        await queue.put({"type": "progress", "data": payload})
+
+    async def producer():
+        try:
+            inferred = await svc.infer_template_from_document(
+                document_id=data.document_id,
+                requester_id=current_user.id,
+                requester_is_superuser=current_user.is_superuser,
+                template_name=data.template_name,
+                description=data.description,
+                max_fields=data.max_fields,
+                on_chunk_done=on_chunk_done,
+            )
+            infer_out = TemplateInferOut.model_validate(inferred)
+            await queue.put({"type": "final", "data": infer_out.model_dump()})
+            logger.info(
+                "模板自动推断流式完成: document_id=%s field_count=%s",
+                data.document_id,
+                len(infer_out.fields),
+            )
+        except Exception as e:
+            logger.exception("模板自动推断流式失败: document_id=%s error=%s", data.document_id, e)
+            await queue.put({"type": "error", "data": {"message": str(e)}})
+        finally:
+            await queue.put({"type": "done"})
+
+    async def stream_generator():
+        producer_task = asyncio.create_task(producer())
+        try:
+            yield json.dumps({"type": "start", "data": {"document_id": data.document_id}}, ensure_ascii=False) + "\n"
+            while True:
+                item = await queue.get()
+                event_type = item.get("type")
+                if event_type == "done":
+                    break
+                yield json.dumps(item, ensure_ascii=False) + "\n"
+        finally:
+            if not producer_task.done():
+                producer_task.cancel()
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("", response_model=ResponseBase[PaginatedResponse[TemplateListOut]], summary="查询模板列表")

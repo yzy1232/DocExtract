@@ -85,6 +85,14 @@
             <el-button size="small" text type="primary" @click="router.push(`/templates/${row.id}/edit`)">
               编辑
             </el-button>
+            <el-button
+              size="small"
+              text
+              type="primary"
+              @click="router.push({ path: '/extractions/create', query: { template_id: row.id } })"
+            >
+              新建提取
+            </el-button>
             <el-button size="small" text type="danger" @click="handleDelete(row)">
               删除
             </el-button>

@@ -20,7 +20,113 @@ export const templateApi = {
   addField: (templateId, data) => request.post(`/templates/${templateId}/fields`, data),
 
   // 从文档自动生成模板建议
-  inferFromDocument: (data) => request.post('/templates/infer-from-document', data),
+  inferFromDocument: (data) => request.post('/templates/infer-from-document', data, { timeout: 300000 }),
+
+  // 从文档自动生成模板建议（流式，逐chunk返回）
+  inferFromDocumentStream: async (data, handlers = {}) => {
+    const token = localStorage.getItem('access_token')
+    const inactivityTimeoutMs = Number(handlers.inactivityTimeoutMs || 45000)
+    const controller = new AbortController()
+    let timeoutId = null
+
+    const resetInactivityTimer = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
+      timeoutId = setTimeout(() => {
+        controller.abort('stream-inactivity-timeout')
+      }, inactivityTimeoutMs)
+    }
+
+    resetInactivityTimer()
+
+    const response = await fetch('/api/v1/templates/infer-from-document/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(data),
+      signal: controller.signal,
+    })
+
+    try {
+      if (!response.ok) {
+        let errText = ''
+        try {
+          errText = await response.text()
+        } catch {
+          errText = ''
+        }
+        throw new Error(errText || `HTTP ${response.status}`)
+      }
+
+      if (!response.body) {
+        throw new Error('流式响应为空')
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder('utf-8')
+      let buffer = ''
+      let finalData = null
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+
+        resetInactivityTimer()
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          const raw = line.trim()
+          if (!raw) continue
+
+          let event
+          try {
+            event = JSON.parse(raw)
+          } catch {
+            continue
+          }
+
+          // 每收到一条事件都重置无消息超时计时器。
+          resetInactivityTimer()
+
+          if (event.type === 'progress' && handlers.onProgress) {
+            handlers.onProgress(event.data)
+          } else if (event.type === 'final') {
+            finalData = event.data
+            if (handlers.onFinal) {
+              handlers.onFinal(event.data)
+            }
+          } else if (event.type === 'error') {
+            throw new Error(event.data?.message || '自动生成失败')
+          }
+        }
+      }
+
+      if (!finalData) {
+        throw new Error('未收到最终结果')
+      }
+
+      return { data: finalData }
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        const timeoutError = new Error(`流式超时：${inactivityTimeoutMs / 1000}秒内未收到新进度`)
+        timeoutError.code = 'INFER_STREAM_TIMEOUT'
+        if (handlers.onTimeout) {
+          handlers.onTimeout(timeoutError)
+        }
+        throw timeoutError
+      }
+      throw error
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
+    }
+  },
 
   // 获取分类列表
   listCategories: () => request.get('/templates/categories/list'),

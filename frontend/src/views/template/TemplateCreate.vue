@@ -152,6 +152,13 @@
             <el-button type="success" style="width:100%" :loading="inferring" @click="generateFromDocument()">
               自动生成字段
             </el-button>
+            <div v-if="inferProgress.visible" class="infer-progress">
+              <div class="infer-progress-head">
+                <span>{{ inferProgress.text }}</span>
+                <span>{{ inferProgress.chunkIndex }}/{{ inferProgress.chunkTotal }}</span>
+              </div>
+              <el-progress :percentage="inferProgress.percent" :stroke-width="8" />
+            </div>
             <div class="auto-hint">生成后可继续修改字段名称、类型与描述。</div>
           </el-card>
 
@@ -195,7 +202,15 @@ const form = reactive({
 
 const inferForm = reactive({
   document_id: '',
-  max_fields: 12,
+  max_fields: 50,
+})
+
+const inferProgress = reactive({
+  visible: false,
+  percent: 0,
+  chunkIndex: 0,
+  chunkTotal: 0,
+  text: '等待开始...',
 })
 
 const rules = {
@@ -257,6 +272,11 @@ async function generateFromDocument(forceOverwrite = false) {
   }
 
   inferring.value = true
+  inferProgress.visible = true
+  inferProgress.percent = 0
+  inferProgress.chunkIndex = 0
+  inferProgress.chunkTotal = 0
+  inferProgress.text = '正在启动自动生成...'
   try {
     const payload = {
       document_id: inferForm.document_id,
@@ -264,8 +284,89 @@ async function generateFromDocument(forceOverwrite = false) {
       template_name: form.name || undefined,
       description: form.description || undefined,
     }
-    const res = await templateApi.inferFromDocument(payload)
-    const data = res.data || {}
+    console.info('[TemplateInfer][request]', {
+      payload,
+      currentFieldCount: form.fields.length,
+      forceOverwrite,
+    })
+    const res = await templateApi.inferFromDocumentStream(payload, {
+      inactivityTimeoutMs: 45000,
+      onProgress: (progress) => {
+        const stage = progress?.stage
+        const chunkIndex = progress?.chunk_index
+        const chunkTotal = progress?.chunk_total
+        const progressPercent = Number(progress?.progress_percent || 0)
+        const progressFields = Array.isArray(progress?.aggregated_fields) ? progress.aggregated_fields : []
+
+        console.info('[TemplateInfer][progress]', {
+          stage,
+          chunkIndex,
+          chunkTotal,
+          aggregatedFieldCount: progressFields.length,
+        })
+
+        if (!form.name && progress?.name) {
+          form.name = progress.name
+        }
+        if (!form.description && progress?.description) {
+          form.description = progress.description
+        }
+
+        if (chunkTotal) {
+          inferProgress.chunkTotal = Number(chunkTotal) || 0
+        }
+        if (chunkIndex) {
+          inferProgress.chunkIndex = Number(chunkIndex) || 0
+        }
+        inferProgress.percent = Math.max(0, Math.min(100, progressPercent || (inferProgress.chunkTotal > 0
+          ? Math.round((inferProgress.chunkIndex / inferProgress.chunkTotal) * 100)
+          : 0)))
+        inferProgress.text = stage === 'chunk_done'
+          ? `正在处理分片 ${inferProgress.chunkIndex}/${inferProgress.chunkTotal}，已回填 ${progressFields.length} 个候选字段`
+          : '正在处理中...'
+
+        if (progressFields.length > 0) {
+          form.fields = progressFields.map((field, idx) => ({
+            name: field.name || `field_${idx + 1}`,
+            display_name: field.display_name || `字段${idx + 1}`,
+            field_type: field.field_type || 'text',
+            required: !!field.required,
+            is_array: field.field_type === 'list',
+            description: field.description || '',
+            extraction_hints: field.extraction_hints || '',
+            sort_order: field.sort_order ?? idx,
+          }))
+        }
+      },
+      onFinal: (finalData) => {
+        const finalCount = Array.isArray(finalData?.fields) ? finalData.fields.length : 0
+        inferProgress.percent = 100
+        inferProgress.text = `处理完成，最终返回 ${finalCount} 个字段`
+      },
+      onTimeout: () => {
+        inferProgress.text = '等待分片结果超时，已中止请求'
+      },
+    })
+    console.info('[TemplateInfer][response]', {
+      responseType: typeof res,
+      hasData: !!res?.data,
+      topLevelKeys: res && typeof res === 'object' ? Object.keys(res) : [],
+    })
+
+    // 兼容两种返回结构：
+    // 1) 拦截器返回 ResponseBase => res.data 为业务数据
+    // 2) 直接返回业务数据 => res 即业务数据
+    const data = (res && typeof res === 'object' && res.data && typeof res.data === 'object') ? res.data : (res || {})
+    const rawFields = data?.fields
+    const fieldsArray = Array.isArray(rawFields) ? rawFields : []
+
+    if (!Array.isArray(rawFields)) {
+      console.warn('[TemplateInfer][unexpected-fields-shape]', {
+        fieldsType: typeof rawFields,
+        rawFields,
+        data,
+      })
+    }
 
     if (!form.name && data.name) {
       form.name = data.name
@@ -274,7 +375,7 @@ async function generateFromDocument(forceOverwrite = false) {
       form.description = data.description
     }
 
-    form.fields = (data.fields || []).map((field, idx) => ({
+    form.fields = fieldsArray.map((field, idx) => ({
       name: field.name || `field_${idx + 1}`,
       display_name: field.display_name || `字段${idx + 1}`,
       field_type: field.field_type || 'text',
@@ -285,11 +386,33 @@ async function generateFromDocument(forceOverwrite = false) {
       sort_order: field.sort_order ?? idx,
     }))
 
+    console.info('[TemplateInfer][mapped-fields]', {
+      returnedFieldCount: fieldsArray.length,
+      mappedFieldCount: form.fields.length,
+      sample: form.fields.slice(0, 3),
+    })
+
     ElMessage.success(`已生成 ${form.fields.length} 个字段，可继续编辑后保存`)
-  } catch {
-    ElMessage.error('自动生成失败')
+  } catch (err) {
+    console.error('[TemplateInfer][failed]', {
+      message: err?.message,
+      code: err?.code,
+      status: err?.response?.status,
+      responseData: err?.response?.data,
+      stack: err?.stack,
+    })
+    if (err?.code === 'ECONNABORTED' || err?.code === 'INFER_STREAM_TIMEOUT') {
+      ElMessage.error('自动生成超时，请稍后重试（后端可能仍在处理中）')
+    } else {
+      ElMessage.error('自动生成失败')
+    }
   } finally {
     inferring.value = false
+    window.setTimeout(() => {
+      if (!inferring.value) {
+        inferProgress.visible = false
+      }
+    }, 1200)
   }
 }
 
@@ -369,5 +492,20 @@ onMounted(async () => {
   font-size: 12px;
   color: #64748b;
   line-height: 1.5;
+}
+
+.infer-progress {
+  margin-top: 12px;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.infer-progress-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #0f766e;
+  margin-bottom: 8px;
 }
 </style>
