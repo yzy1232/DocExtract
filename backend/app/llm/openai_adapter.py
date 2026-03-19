@@ -3,10 +3,16 @@ OpenAI 兼容适配器 - 支持 OpenAI 及所有兼容 OpenAI API 的提供商
 (DeepSeek、Moonshot、智谱、Ollama 等均可通过此适配器对接)
 """
 import asyncio
+import json
+import logging
 from typing import List, AsyncGenerator, Optional
 from openai import AsyncOpenAI, APIError, APIConnectionError, RateLimitError
 from app.llm.base_adapter import BaseLLMAdapter, LLMMessage, LLMResponse, LLMConfig
 from app.core.exceptions import LLMException
+
+
+LLM_ADAPTER_LOG_MAX_CHARS = 4000
+logger = logging.getLogger(__name__)
 
 
 class OpenAICompatibleAdapter(BaseLLMAdapter):
@@ -25,15 +31,38 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
     def provider_name(self) -> str:
         return self._provider
 
+    def _truncate_for_log(self, value, max_chars: int = LLM_ADAPTER_LOG_MAX_CHARS) -> str:
+        if isinstance(value, str):
+            text = value
+        else:
+            try:
+                text = json.dumps(value, ensure_ascii=False)
+            except Exception:
+                text = str(value)
+
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars]}... [truncated {len(text) - max_chars} chars]"
+
     async def chat(self, messages: List[LLMMessage], config: LLMConfig) -> LLMResponse:
         """发送聊天请求（带重试）"""
         last_exception = None
+        request_messages = self._build_messages_dicts(messages)
+        logger.info(
+            "LLM请求: provider=%s model=%s temperature=%s max_tokens=%s messages=%s",
+            self._provider,
+            config.model,
+            config.temperature,
+            config.max_tokens,
+            self._truncate_for_log(request_messages),
+        )
+
         for attempt in range(3):
             try:
                 response = await asyncio.wait_for(
                     self._client.chat.completions.create(
                         model=config.model,
-                        messages=self._build_messages_dicts(messages),
+                        messages=request_messages,
                         temperature=config.temperature,
                         max_tokens=config.max_tokens,
                         top_p=config.top_p,
@@ -43,6 +72,17 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 )
                 choice = response.choices[0]
                 usage = response.usage
+
+                logger.info(
+                    "LLM响应: provider=%s model=%s finish_reason=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s content=%s",
+                    self._provider,
+                    response.model,
+                    choice.finish_reason or "stop",
+                    usage.prompt_tokens if usage else 0,
+                    usage.completion_tokens if usage else 0,
+                    usage.total_tokens if usage else 0,
+                    self._truncate_for_log(choice.message.content or ""),
+                )
 
                 return LLMResponse(
                     content=choice.message.content or "",
@@ -58,13 +98,34 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             except RateLimitError as e:
                 last_exception = e
                 wait_time = 2 ** attempt
+                logger.warning(
+                    "LLM限流，准备重试: provider=%s model=%s attempt=%s wait_seconds=%s error=%s",
+                    self._provider,
+                    config.model,
+                    attempt + 1,
+                    wait_time,
+                    str(e),
+                )
                 await asyncio.sleep(wait_time)
 
             except (APIConnectionError, asyncio.TimeoutError) as e:
                 last_exception = e
+                logger.warning(
+                    "LLM连接或超时错误，准备重试: provider=%s model=%s attempt=%s error=%s",
+                    self._provider,
+                    config.model,
+                    attempt + 1,
+                    str(e),
+                )
                 await asyncio.sleep(1)
 
             except APIError as e:
+                logger.exception(
+                    "LLM API错误: provider=%s model=%s error=%s",
+                    self._provider,
+                    config.model,
+                    e.message,
+                )
                 raise LLMException(
                     message=f"{self._provider} API 错误: {e.message}",
                     detail=str(e),

@@ -19,7 +19,7 @@
     </section>
 
     <!-- 运行中进度条 -->
-    <el-card v-if="['pending', 'running', 'queued', 'processing'].includes(task.status)" shadow="never" class="progress-card">
+    <el-card v-if="['pending', 'running', 'queued', 'processing', 'retrying'].includes(task.status)" shadow="never" class="progress-card">
       <div class="progress-center">
         <el-progress type="circle" :percentage="smoothProgress" :width="120" :format="formatPercentage" />
         <div class="progress-desc">
@@ -124,6 +124,7 @@ const pagination = ref({
 })
 let pollTimer = null
 let smoothTimer = null
+let completedEmptyPollCount = 0
 
 const matrixColumns = computed(() => {
   if (!Array.isArray(fieldResults.value)) return []
@@ -155,11 +156,11 @@ const matrixRows = computed(() => {
 })
 
 const statusTypeMap = {
-  pending: 'info', queued: 'info', running: 'warning', processing: 'warning',
+  pending: 'info', queued: 'info', running: 'warning', processing: 'warning', retrying: 'warning',
   completed: 'success', failed: 'danger', cancelled: 'info',
 }
 const statusLabelMap = {
-  pending: '待处理', queued: '排队中', running: '运行中', processing: '处理中',
+  pending: '待处理', queued: '排队中', running: '运行中', processing: '处理中', retrying: '重试中',
   completed: '已完成', failed: '失败', cancelled: '已取消',
 }
 
@@ -227,53 +228,89 @@ async function loadTask() {
       : []
 
     let previewRows = []
-    try {
-      const rRes = await extractionApi.getResults(route.params.id, {
-        paged: true,
-        page: pagination.value.page,
-        page_size: pagination.value.pageSize,
-      })
-      const resultData = rRes.data || {}
-      const structured = resultData.structured_result || {}
-      if (Array.isArray(structured.columns) && Array.isArray(structured.rows)) {
-        const p = structured.pagination || {}
-        pagination.value = {
-          page: Number(p.page) || pagination.value.page,
-          pageSize: Number(p.page_size) || pagination.value.pageSize,
-          totalRows: Number(p.total_rows) || 0,
-          totalPages: Number(p.total_pages) || 1,
-        }
-
-        previewRows = (structured.columns || []).map((col) => {
-          const key = col.field_name || col.field_label
-          return {
-            field_name: key,
-            field_label: col.field_label || key,
-            value: (structured.rows || []).map((r) => (r ? r[key] : null)),
+    
+    // 【新增】优先从raw_result.partial_chunks中构建即时结果（流式显示已完成chunks）
+    const rawResult = task.value.raw_result || {}
+    const partialChunks = Array.isArray(rawResult.partial_chunks) ? rawResult.partial_chunks : []
+    
+    if (partialChunks.length > 0) {
+      // 聚合所有已完成chunks的字段，用最后一个chunk的结果作为预览
+      const latestChunk = partialChunks[partialChunks.length - 1]
+      if (latestChunk && typeof latestChunk === 'object') {
+        const fieldsMap = latestChunk.fields || {}
+        const records = latestChunk.records || []
+        
+        if (typeof fieldsMap === 'object' && Object.keys(fieldsMap).length > 0) {
+          previewRows = Object.entries(fieldsMap).map(([fieldName, fieldValue]) => ({
+            field_name: fieldName,
+            field_label: fieldName,
+            value: records.length > 0 
+              ? records.map(r => r && r[fieldName] ? r[fieldName] : null)
+              : [fieldValue],
             confidence: null,
             is_valid: null,
-          }
+          }))
+        }
+      }
+    }
+    
+    // 【原有逻辑】最终结果API降为备选方案
+    if (previewRows.length === 0) {
+      try {
+        const rRes = await extractionApi.getResults(route.params.id, {
+          paged: true,
+          page: pagination.value.page,
+          page_size: pagination.value.pageSize,
         })
-      } else {
-        // 兼容旧版结构
-        previewRows = structured && typeof structured === 'object'
-          ? Object.entries(structured).map(([key, value]) => ({
+        const resultData = rRes.data || {}
+        const structured = resultData.structured_result || {}
+        if (Array.isArray(structured.columns) && Array.isArray(structured.rows)) {
+          const p = structured.pagination || {}
+          pagination.value = {
+            page: Number(p.page) || pagination.value.page,
+            pageSize: Number(p.page_size) || pagination.value.pageSize,
+            totalRows: Number(p.total_rows) || 0,
+            totalPages: Number(p.total_pages) || 1,
+          }
+
+          previewRows = (structured.columns || []).map((col) => {
+            const key = col.field_name || col.field_label
+            return {
               field_name: key,
-              field_label: key,
-              value,
+              field_label: col.field_label || key,
+              value: (structured.rows || []).map((r) => (r ? r[key] : null)),
               confidence: null,
               is_valid: null,
-            }))
-          : []
+            }
+          })
+        } else {
+          // 兼容旧版结构
+          previewRows = structured && typeof structured === 'object'
+            ? Object.entries(structured).map(([key, value]) => ({
+                field_name: key,
+                field_label: key,
+                value,
+                confidence: null,
+                is_valid: null,
+              }))
+            : []
+        }
+      } catch {
+        previewRows = []
       }
-    } catch {
-      previewRows = []
     }
 
     if (task.value.status === 'completed') {
       fieldResults.value = previewRows.length > 0 ? previewRows : taskFieldResults
+      if (fieldResults.value.length === 0) {
+        completedEmptyPollCount += 1
+      } else {
+        completedEmptyPollCount = 0
+      }
     } else {
-      fieldResults.value = previewRows
+      // 【改进】即使任务还在processing，如果有partial chunks就立即展示
+      fieldResults.value = previewRows.length > 0 ? previewRows : []
+      completedEmptyPollCount = 0
     }
   } catch {
     ElMessage.error('加载任务失败')
@@ -349,19 +386,41 @@ async function exportResult(format) {
   }
 }
 
+function shouldPollTask() {
+  // 任务还在处理中时，频繁轮询以获取partial chunks
+  if (['pending', 'queued', 'running', 'processing', 'retrying'].includes(task.value.status)) {
+    return true
+  }
+  // 任务完成但结果为空时，继续轮询作为备选
+  if (task.value.status === 'completed' && fieldResults.value.length === 0 && completedEmptyPollCount < 12) {
+    return true
+  }
+  return false
+}
+
 onMounted(async () => {
   loading.value = true
   await loadTask()
   loading.value = false
 
-  // 如果任务未完成，轮询状态
-  if (['pending', 'queued', 'running', 'processing'].includes(task.value.status)) {
-    pollTimer = setInterval(async () => {
-      await loadTask()
-      if (['completed', 'failed', 'cancelled'].includes(task.value.status)) {
-        clearInterval(pollTimer)
-      }
-    }, 5000)
+  if (shouldPollTask()) {
+    // 【改进】处理中时用1秒快速轮询（获取partial chunks），完成后改为5秒
+    const startPolling = () => {
+      pollTimer = setInterval(async () => {
+        await loadTask()
+        const isProcessing = ['pending', 'queued', 'running', 'processing', 'retrying'].includes(task.value.status)
+        
+        if (!shouldPollTask()) {
+          clearInterval(pollTimer)
+          if (task.value.status === 'completed' && fieldResults.value.length === 0) {
+            ElMessage.warning('任务已完成，但结果暂不可见，请稍后刷新')
+          }
+        } else if (isProcessing) {
+          // 继续快速轮询，保持检测新的partial chunks
+        }
+      }, 1000)  // 改为1秒快速轮询
+    }
+    startPolling()
   }
 })
 

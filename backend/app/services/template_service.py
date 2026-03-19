@@ -3,7 +3,9 @@
 """
 import uuid
 import json
+import ast
 import re
+import logging
 from typing import Optional, List, Tuple, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, delete
@@ -20,9 +22,26 @@ from app.processors.factory import get_processor
 from app.processors.mime_resolver import normalize_mime_type
 
 
+TEMPLATE_LLM_LOG_MAX_CHARS = 4000
+logger = logging.getLogger(__name__)
+
+
 class TemplateService:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    def _truncate_log_text(self, value: Any, max_chars: int = TEMPLATE_LLM_LOG_MAX_CHARS) -> str:
+        if isinstance(value, str):
+            text = value
+        else:
+            try:
+                text = json.dumps(value, ensure_ascii=False)
+            except Exception:
+                text = str(value)
+
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars]}... [truncated {len(text) - max_chars} chars]"
 
     async def _resolve_infer_adapter_and_config(self):
         """模板自动提取优先使用系统默认 LLM 配置，回退到环境默认。"""
@@ -48,12 +67,11 @@ class TemplateService:
                     adapter = create_adapter_from_db_config(
                         cfg.api_key_encrypted,
                         cfg.base_url,
-                        provider=cfg.provider,
                         model=llm_config.model,
                     )
                     return adapter, llm_config
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("模板推断加载DB LLM配置失败，回退环境默认配置: error=%s", e)
 
         return get_default_adapter(), llm_config
 
@@ -303,11 +321,25 @@ class TemplateService:
         inferred_name = (template_name or "").strip() or self._default_template_name(document.name)
         inferred_desc = (description or "").strip() or f"基于文档《{document.display_name or document.name}》自动生成"
 
+        logger.info(
+            "模板自动推断开始: document_id=%s requester_id=%s mime_type=%s sample_text_len=%s max_fields=%s",
+            document_id,
+            requester_id,
+            mime_type,
+            len(sample_text),
+            max_fields,
+        )
+
         # Excel 优先使用真实表头做确定性推断，避免LLM异常时退化为固定兜底字段。
         is_excel_doc = mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         if is_excel_doc:
             excel_fields = self._infer_fields_from_excel_tables(parse_result, max_fields)
             if excel_fields:
+                logger.info(
+                    "模板自动推断命中Excel确定性分支: document_id=%s field_count=%s",
+                    document_id,
+                    len(excel_fields),
+                )
                 return {
                     "name": inferred_name,
                     "description": inferred_desc,
@@ -320,6 +352,13 @@ class TemplateService:
             llm_config.max_tokens = min(llm_config.max_tokens, 1800)
 
             prompt = self._build_infer_prompt(sample_text, inferred_name, inferred_desc, max_fields)
+            logger.info(
+                "模板自动推断模型调用输入(第一轮): document_id=%s provider=%s model=%s prompt=%s",
+                document_id,
+                getattr(adapter, "provider_name", "unknown"),
+                llm_config.model,
+                self._truncate_log_text(prompt),
+            )
             messages = [
                 LLMMessage(
                     role="system",
@@ -332,13 +371,32 @@ class TemplateService:
             ]
 
             response = await adapter.chat(messages, llm_config)
-            parsed = self._parse_infer_response(response.content)
+            logger.info(
+                "模板自动推断模型调用输出(第一轮): document_id=%s total_tokens=%s content=%s",
+                document_id,
+                response.total_tokens,
+                self._truncate_log_text(response.content),
+            )
+            parsed = await self._parse_or_repair_infer_response(
+                adapter=adapter,
+                llm_config=llm_config,
+                raw_content=response.content,
+                document_id=document_id,
+                stage="第一轮",
+            )
             inferred_name = (parsed.get("name") or inferred_name).strip() or inferred_name
             inferred_desc = (parsed.get("description") or inferred_desc).strip() or inferred_desc
             inferred_fields = parsed.get("fields") or []
 
             # 第二轮校验：让模型基于文档内容修正字段定义，减少幻觉字段。
             verify_prompt = self._build_verify_prompt(sample_text, inferred_name, inferred_desc, inferred_fields, max_fields)
+            logger.info(
+                "模板自动推断模型调用输入(第二轮校验): document_id=%s provider=%s model=%s prompt=%s",
+                document_id,
+                getattr(adapter, "provider_name", "unknown"),
+                llm_config.model,
+                self._truncate_log_text(verify_prompt),
+            )
             verify_messages = [
                 LLMMessage(
                     role="system",
@@ -350,14 +408,43 @@ class TemplateService:
                 LLMMessage(role="user", content=verify_prompt),
             ]
             verify_response = await adapter.chat(verify_messages, llm_config)
-            verified = self._parse_infer_response(verify_response.content)
-            inferred_fields = verified.get("fields") or inferred_fields
-        except Exception:
+            logger.info(
+                "模板自动推断模型调用输出(第二轮校验): document_id=%s total_tokens=%s content=%s",
+                document_id,
+                verify_response.total_tokens,
+                self._truncate_log_text(verify_response.content),
+            )
+            try:
+                verified = await self._parse_or_repair_infer_response(
+                    adapter=adapter,
+                    llm_config=llm_config,
+                    raw_content=verify_response.content,
+                    document_id=document_id,
+                    stage="第二轮校验",
+                )
+                inferred_fields = verified.get("fields") or inferred_fields
+            except Exception as verify_err:
+                # 第二轮只做增强校验，失败时保留第一轮结果，避免整体退化到规则兜底。
+                logger.warning(
+                    "模板自动推断第二轮校验解析失败，保留第一轮结果: document_id=%s error=%s",
+                    document_id,
+                    verify_err,
+                )
+        except Exception as e:
+            logger.exception("模板自动推断模型调用失败，使用规则兜底: document_id=%s error=%s", document_id, e)
             inferred_fields = self._fallback_fields_from_text(sample_text, max_fields)
 
         cleaned_fields = self._sanitize_inferred_fields(inferred_fields, max_fields)
         if not cleaned_fields:
+            logger.warning("模板自动推断清洗后字段为空，使用规则兜底: document_id=%s", document_id)
             cleaned_fields = self._fallback_fields_from_text(sample_text, max_fields)
+
+        logger.info(
+            "模板自动推断完成: document_id=%s template_name=%s field_count=%s",
+            document_id,
+            inferred_name,
+            len(cleaned_fields),
+        )
 
         return {
             "name": inferred_name,
@@ -441,18 +528,107 @@ class TemplateService:
 
     def _parse_infer_response(self, content: str) -> Dict[str, Any]:
         text = (content or "").strip()
+        if not text:
+            raise ValidationException("LLM 返回内容为空，无法解析为 JSON")
+
         if text.startswith("```"):
             lines = text.splitlines()
             if len(lines) >= 3:
                 text = "\n".join(lines[1:-1]).strip()
 
+        candidates: List[str] = [text]
+
+        # 尝试提取最外层 JSON 对象，避免模型前后夹杂解释文本。
+        first_brace = text.find("{")
+        last_brace = text.rfind("}")
+        if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
+            candidates.append(text[first_brace:last_brace + 1])
+
+        for candidate in candidates:
+            parsed = self._try_parse_json_candidate(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+
+        raise ValidationException("LLM 返回内容无法解析为 JSON")
+
+    async def _parse_or_repair_infer_response(
+        self,
+        adapter,
+        llm_config,
+        raw_content: str,
+        document_id: str,
+        stage: str,
+    ) -> Dict[str, Any]:
+        """先本地解析；失败时让模型仅做 JSON 修复重写。"""
         try:
-            return json.loads(text)
+            return self._parse_infer_response(raw_content)
+        except Exception as parse_err:
+            logger.warning(
+                "模板自动推断%s解析失败，尝试JSON修复重写: document_id=%s error=%s",
+                stage,
+                document_id,
+                parse_err,
+            )
+
+        repair_messages = [
+            LLMMessage(
+                role="system",
+                content=(
+                    "你是JSON修复器。把用户给出的文本重写为严格JSON对象。"
+                    "只输出JSON对象本身，不要任何解释。"
+                    "必须包含键: name, description, fields。"
+                ),
+            ),
+            LLMMessage(
+                role="user",
+                content=(
+                    "请将下面内容修复为严格JSON。"
+                    "如果原文包含多余说明、注释、代码块、单引号、尾逗号，请清理。\n\n"
+                    f"原始内容:\n{self._truncate_log_text(raw_content, 12000)}"
+                ),
+            ),
+        ]
+
+        repair_response = await adapter.chat(repair_messages, llm_config)
+        logger.info(
+            "模板自动推断%s JSON修复输出: document_id=%s total_tokens=%s content=%s",
+            stage,
+            document_id,
+            repair_response.total_tokens,
+            self._truncate_log_text(repair_response.content),
+        )
+
+        return self._parse_infer_response(repair_response.content)
+
+    def _try_parse_json_candidate(self, text: str) -> Optional[Dict[str, Any]]:
+        """对候选文本做容错 JSON 解析。"""
+        if not text:
+            return None
+
+        raw = text.strip()
+        attempts = [raw]
+
+        # 常见修复1：去掉对象/数组前的尾逗号。
+        attempts.append(re.sub(r",\s*([}\]])", r"\1", raw))
+
+        # 常见修复2：处理Python字面量风格（单引号/True/False/None）。
+        normalized = re.sub(r",\s*([}\]])", r"\1", raw)
+        try:
+            literal_obj = ast.literal_eval(normalized)
+            if isinstance(literal_obj, dict):
+                return literal_obj
         except Exception:
-            match = re.search(r"\{[\s\S]*\}", text)
-            if not match:
-                raise ValidationException("LLM 返回内容无法解析为 JSON")
-            return json.loads(match.group(0))
+            pass
+
+        for attempt in attempts:
+            try:
+                parsed = json.loads(attempt)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                continue
+
+        return None
 
     def _sanitize_inferred_fields(self, fields: List[Dict[str, Any]], max_fields: int) -> List[Dict[str, Any]]:
         used_names = set()

@@ -1,6 +1,7 @@
 """
 模板管理 API
 """
+import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,7 @@ from app.models.user import User
 from app.models.template import TemplateStatus
 
 router = APIRouter(prefix="/templates", tags=["模板管理"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("", response_model=ResponseBase[TemplateOut], summary="创建模板")
@@ -25,8 +27,16 @@ async def create_template(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    logger.info(
+        "创建模板请求: user_id=%s name=%s field_count=%s is_public=%s",
+        current_user.id,
+        data.name,
+        len(data.fields),
+        data.is_public,
+    )
     svc = TemplateService(db)
     template = await svc.create(data, current_user.id)
+    logger.info("创建模板成功: template_id=%s user_id=%s", template.id, current_user.id)
     return ResponseBase(data=TemplateOut.model_validate(template))
 
 
@@ -36,6 +46,13 @@ async def infer_template_from_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    logger.info(
+        "模板自动推断请求: user_id=%s document_id=%s max_fields=%s template_name=%s",
+        current_user.id,
+        data.document_id,
+        data.max_fields,
+        data.template_name,
+    )
     svc = TemplateService(db)
     inferred = await svc.infer_template_from_document(
         document_id=data.document_id,
@@ -44,6 +61,12 @@ async def infer_template_from_document(
         template_name=data.template_name,
         description=data.description,
         max_fields=data.max_fields,
+    )
+    logger.info(
+        "模板自动推断成功: document_id=%s inferred_name=%s field_count=%s",
+        data.document_id,
+        inferred.get("name"),
+        len(inferred.get("fields") or []),
     )
     return ResponseBase(data=TemplateInferOut.model_validate(inferred))
 
