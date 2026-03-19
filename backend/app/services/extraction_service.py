@@ -1447,7 +1447,7 @@ class ExtractionService:
                 export_rows.append(row_data)
 
         if export_format == "json":
-            content = json.dumps(export_rows, ensure_ascii=False, indent=2).encode("utf-8")
+            content = json.dumps(export_rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             content_type = "application/json"
             ext = "json"
         else:
