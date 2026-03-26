@@ -10,7 +10,7 @@ from sqlalchemy import select, text, or_, func
 from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.schemas.common import ResponseBase
-from app.core.auth import get_current_superuser
+from app.core.auth import get_current_user
 from app.models.user import User, Role, UserStatus
 from app.models.system import LLMConfig, SystemConfig
 from app.schemas.user import AdminUserCreate, AdminUserUpdate
@@ -68,25 +68,34 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 @router.get("/stats", response_model=ResponseBase[dict], summary="系统统计")
 async def get_stats(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_superuser),
+    current_user: User = Depends(get_current_user),
 ):
     from app.models.document import Document
     from app.models.template import Template
     from app.models.extraction import ExtractionTask, TaskStatus
-    from sqlalchemy import func
 
     # 统计时排除已删除/归档的数据以符合前端显示语义（活跃模板、未删除文档）
     from app.models.document import DocumentStatus
     from app.models.template import TemplateStatus
 
-    doc_count = await db.execute(select(func.count(Document.id)).where(Document.status != DocumentStatus.DELETED))
-    tmpl_count = await db.execute(select(func.count(Template.id)).where(Template.status != TemplateStatus.ARCHIVED))
-    task_count = await db.execute(select(func.count(ExtractionTask.id)))
-    pending_tasks = await db.execute(
-        select(func.count(ExtractionTask.id)).where(
-            ExtractionTask.status.in_([TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING])
-        )
+    doc_stmt = select(func.count(Document.id)).where(Document.status != DocumentStatus.DELETED)
+    tmpl_stmt = select(func.count(Template.id)).where(Template.status != TemplateStatus.ARCHIVED)
+    task_stmt = select(func.count(ExtractionTask.id))
+    pending_stmt = select(func.count(ExtractionTask.id)).where(
+        ExtractionTask.status.in_([TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING])
     )
+
+    # 管理员看全局；普通用户仅看自己创建/上传的数据。
+    if not current_user.is_superuser:
+                doc_stmt = doc_stmt.where(Document.owner_id == current_user.id)
+                tmpl_stmt = tmpl_stmt.where(Template.creator_id == current_user.id)
+                task_stmt = task_stmt.where(ExtractionTask.creator_id == current_user.id)
+                pending_stmt = pending_stmt.where(ExtractionTask.creator_id == current_user.id)
+
+    doc_count = await db.execute(doc_stmt)
+    tmpl_count = await db.execute(tmpl_stmt)
+    task_count = await db.execute(task_stmt)
+    pending_tasks = await db.execute(pending_stmt)
     return ResponseBase(data={
         "total_documents": doc_count.scalar(),
         "total_templates": tmpl_count.scalar(),

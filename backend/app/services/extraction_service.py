@@ -506,6 +506,37 @@ class ExtractionService:
             return
         task.progress = progress
 
+    def _sync_task_status_from_celery(self, task: ExtractionTask) -> bool:
+        """根据 Celery 实时状态修正任务展示状态，降低排队态滞后。"""
+        if not task.celery_task_id:
+            return False
+
+        if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            return False
+
+        try:
+            from app.tasks.celery_app import celery_app
+
+            async_result = celery_app.AsyncResult(task.celery_task_id)
+            runtime_state = (async_result.state or "").upper()
+        except Exception:
+            return False
+
+        changed = False
+
+        if runtime_state == "STARTED" and task.status in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.RETRYING):
+            task.status = TaskStatus.PROCESSING
+            task.started_at = task.started_at or datetime.now(timezone.utc)
+            if not task.progress_message or "入队" in task.progress_message or "待调度" in task.progress_message:
+                task.progress_message = "任务处理中"
+            changed = True
+        elif runtime_state == "RETRY" and task.status != TaskStatus.RETRYING:
+            task.status = TaskStatus.RETRYING
+            task.progress_message = "任务重试中"
+            changed = True
+
+        return changed
+
     def _is_excel_document(self, document: Document) -> bool:
         normalized_mime = normalize_mime_type(document.mime_type, document.name)
         return (
@@ -1408,7 +1439,10 @@ class ExtractionService:
         if not task:
             raise NotFoundException("提取任务", task_id)
 
+        status_changed = self._sync_task_status_from_celery(task)
         self._mark_task_stale_failed(task)
+        if task.status != TaskStatus.FAILED and status_changed:
+            task.updated_at = datetime.now(timezone.utc)
         await self.db.flush()
         await self.db.commit()
 
@@ -1530,6 +1564,8 @@ class ExtractionService:
         tasks = result.scalars().all()
         need_commit = False
         for task in tasks:
+            if self._sync_task_status_from_celery(task):
+                need_commit = True
             before_status = task.status
             self._mark_task_stale_failed(task)
             if task.status != before_status:

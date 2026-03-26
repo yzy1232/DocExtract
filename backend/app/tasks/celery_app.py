@@ -55,4 +55,5 @@ celery_app.conf.update(
     # 使 worker 发布事件，以便 Flower 能够通过 inspector 获取队列/任务状态
     worker_send_task_events=True,
     task_send_sent_event=True,
+    task_track_started=True,
 )

@@ -330,16 +330,12 @@ class TemplateService:
         max_chunks = max(1, int(getattr(settings, "TEMPLATE_INFER_MAX_CHUNKS", TEMPLATE_INFER_MAX_CHUNKS)))
         text_chunks = self._split_text_with_overlap(full_text, chunk_size, chunk_overlap)
         selected_chunks = text_chunks[:max_chunks]
-        sample_text = self._build_chunk_context_text(
-            selected_chunks,
-            max_chars=TEMPLATE_INFER_VERIFY_TEXT_LIMIT,
-        )
         inferred_fields: List[Dict[str, Any]] = []
         inferred_name = (template_name or "").strip() or self._default_template_name(document.name)
         inferred_desc = (description or "").strip() or f"基于文档《{document.display_name or document.name}》自动生成"
 
         logger.info(
-            "模板自动推断开始: document_id=%s requester_id=%s mime_type=%s doc_len=%s chunk_size=%s overlap=%s total_chunks=%s selected_chunks=%s sample_text_len=%s max_fields=%s",
+            "模板自动推断开始: document_id=%s requester_id=%s mime_type=%s doc_len=%s chunk_size=%s overlap=%s total_chunks=%s selected_chunks=%s max_fields=%s",
             document_id,
             requester_id,
             mime_type,
@@ -348,7 +344,6 @@ class TemplateService:
             chunk_overlap,
             len(text_chunks),
             len(selected_chunks),
-            len(sample_text),
             max_fields,
         )
 
@@ -466,48 +461,11 @@ class TemplateService:
                         task.cancel()
                 raise
 
-            # 第二轮校验：让模型基于文档内容修正字段定义，减少幻觉字段。
-            verify_prompt = self._build_verify_prompt(sample_text, inferred_name, inferred_desc, inferred_fields, max_fields)
             logger.info(
-                "模板自动推断模型调用输入(第二轮校验): document_id=%s provider=%s model=%s prompt=%s",
+                "模板自动推断跳过准确性校验阶段，直接使用第一轮分块聚合结果: document_id=%s aggregated_field_candidates=%s",
                 document_id,
-                getattr(adapter, "provider_name", "unknown"),
-                llm_config.model,
-                self._truncate_log_text(verify_prompt),
+                len(inferred_fields),
             )
-            verify_messages = [
-                LLMMessage(
-                    role="system",
-                    content=(
-                        "你是资深信息抽取QA工程师。请严格检查字段定义是否能从文档稳定提取，"
-                        "输出必须是严格 JSON。"
-                    ),
-                ),
-                LLMMessage(role="user", content=verify_prompt),
-            ]
-            verify_response = await adapter.chat(verify_messages, llm_config)
-            logger.info(
-                "模板自动推断模型调用输出(第二轮校验): document_id=%s total_tokens=%s content=%s",
-                document_id,
-                verify_response.total_tokens,
-                self._truncate_log_text(verify_response.content),
-            )
-            try:
-                verified = await self._parse_or_repair_infer_response(
-                    adapter=adapter,
-                    llm_config=llm_config,
-                    raw_content=verify_response.content,
-                    document_id=document_id,
-                    stage="第二轮校验",
-                )
-                inferred_fields = verified.get("fields") or inferred_fields
-            except Exception as verify_err:
-                # 第二轮只做增强校验，失败时保留第一轮结果，避免整体退化到规则兜底。
-                logger.warning(
-                    "模板自动推断第二轮校验解析失败，保留第一轮结果: document_id=%s error=%s",
-                    document_id,
-                    verify_err,
-                )
         except Exception as e:
             logger.exception("模板自动推断模型调用失败，直接返回失败: document_id=%s error=%s", document_id, e)
             raise ValidationException(f"模板自动推断失败: {e}")
