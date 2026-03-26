@@ -132,6 +132,31 @@ async def list_llm_configs(
     ])
 
 
+@router.get("/llm-options", response_model=ResponseBase[list[dict]], summary="获取可用LLM模型选项")
+async def list_llm_options(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """普通登录用户可用，仅返回创建提取任务所需的安全字段。"""
+    result = await db.execute(
+        select(LLMConfig)
+        .where(LLMConfig.is_active == True)
+        .order_by(LLMConfig.is_default.desc(), LLMConfig.priority.desc())
+    )
+    configs = result.scalars().all()
+
+    return ResponseBase(data=[
+        {
+            "id": c.id,
+            "name": c.name,
+            "model_name": c.model_name,
+            "is_default": c.is_default,
+            "is_active": c.is_active,
+        }
+        for c in configs
+    ])
+
+
 @router.post("/llm-configs", response_model=ResponseBase[dict], summary="创建LLM配置")
 async def create_llm_config(
     payload: dict = Body(...),

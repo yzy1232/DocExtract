@@ -215,6 +215,7 @@ export const extractionApi = {
 export const systemApi = {
   health: () => request.get('/system/health'),
   stats: () => request.get('/system/stats'),
+  listLLMOptions: () => request.get('/system/llm-options'),
 
   // LLM 配置 CRUD
   listLLMConfigs: () => request.get('/system/llm-configs'),

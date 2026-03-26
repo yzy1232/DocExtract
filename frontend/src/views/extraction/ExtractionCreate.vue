@@ -268,7 +268,7 @@ onMounted(async () => {
 
   // 加载系统 LLM 配置用于下拉
   try {
-    const res = await systemApi.listLLMConfigs()
+    const res = await systemApi.listLLMOptions()
     // 仅展示已启用的配置，并按后端顺序展示
     llmOptions.value = (res.data || []).filter((c) => c.is_active)
     // 预选默认配置（若存在）否则选第一个
