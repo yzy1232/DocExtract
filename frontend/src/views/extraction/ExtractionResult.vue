@@ -12,8 +12,23 @@
           {{ statusLabelMap[task.status] }}
         </el-tag>
         <template v-if="task.status === 'completed'">
-          <el-button :icon="Download" @click="exportResult('xlsx')">导出 Excel</el-button>
-          <el-button :icon="Download" type="primary" @click="exportResult('json')">导出 JSON</el-button>
+          <el-button
+            :icon="Download"
+            :loading="exportingFormat === 'xlsx'"
+            :disabled="isExporting"
+            @click="exportResult('xlsx')"
+          >
+            导出 Excel
+          </el-button>
+          <el-button
+            :icon="Download"
+            type="primary"
+            :loading="exportingFormat === 'json'"
+            :disabled="isExporting"
+            @click="exportResult('json')"
+          >
+            导出 JSON
+          </el-button>
         </template>
       </div>
     </section>
@@ -126,6 +141,9 @@ const pagination = ref({
 let pollTimer = null
 let smoothTimer = null
 let completedEmptyPollCount = 0
+const exportingFormat = ref('')
+const isExporting = computed(() => Boolean(exportingFormat.value))
+let exportingNotice = null
 
 const matrixColumns = computed(() => {
   if (!Array.isArray(fieldResults.value)) return []
@@ -338,6 +356,19 @@ async function handlePageSizeChange(size) {
 }
 
 async function exportResult(format) {
+  if (isExporting.value) {
+    ElMessage.info('导出任务正在进行中，请稍候')
+    return
+  }
+
+  exportingFormat.value = format
+  exportingNotice = ElMessage({
+    type: 'info',
+    duration: 0,
+    showClose: true,
+    message: '下载任务已提交，请等待文件生成与下载完成...',
+  })
+
   try {
     console.log(`[导出] 开始导出${format}格式，任务ID:${task.value.id}`)
     const res = await extractionApi.export({ task_ids: [task.value.id], format })
@@ -347,6 +378,7 @@ async function exportResult(format) {
       throw new Error('导出文件标识缺失')
     }
     console.log(`[导出] 获得对象键:${objectKey}，开始通过代理下载...`)
+    ElMessage.info('文件已生成，正在下载，请勿关闭页面...')
 
     const downloadRes = await extractionApi.downloadExport(objectKey)
     const contentType = downloadRes.headers?.['content-type'] || 'application/octet-stream'
@@ -383,6 +415,12 @@ async function exportResult(format) {
   } catch (err) {
     console.error(`[导出] ${format}导出失败:`, err)
     ElMessage.error(`${format === 'json' ? 'JSON' : 'Excel'}导出失败: ${err.message || '未知错误'}`)
+  } finally {
+    if (exportingNotice) {
+      exportingNotice.close()
+      exportingNotice = null
+    }
+    exportingFormat.value = ''
   }
 }
 
