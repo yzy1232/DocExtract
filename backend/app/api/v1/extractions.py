@@ -151,8 +151,8 @@ async def restart_failed_extraction(
     return ResponseBase(data=ExtractionTaskOut.model_validate(restarted))
 
 
-@router.delete("/{task_id}", response_model=ResponseBase[MessageResponse], summary="删除失败任务")
-async def delete_failed_extraction(
+@router.delete("/{task_id}", response_model=ResponseBase[MessageResponse], summary="删除任务")
+async def delete_extraction(
     task_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -161,8 +161,9 @@ async def delete_failed_extraction(
     task = await svc.get_task_by_id(task_id)
     if not current_user.is_superuser and task.creator_id != current_user.id:
         raise ForbiddenException("无权限删除该任务")
-    await svc.delete_failed_task(task_id)
-    return ResponseBase(data=MessageResponse(message="失败任务已删除"))
+    action = await svc.delete_task(task_id)
+    message = "任务已取消" if action == "cancelled" else "任务已删除"
+    return ResponseBase(data=MessageResponse(message=message))
 
 
 @router.post("/batch-restart", response_model=ResponseBase[dict], summary="批量重启失败任务")
@@ -193,8 +194,8 @@ async def batch_restart_failed_extractions(
     })
 
 
-@router.post("/batch-delete", response_model=ResponseBase[dict], summary="批量删除失败任务")
-async def batch_delete_failed_extractions(
+@router.post("/batch-delete", response_model=ResponseBase[dict], summary="批量删除任务")
+async def batch_delete_extractions(
     data: TaskBatchAction,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -202,13 +203,19 @@ async def batch_delete_failed_extractions(
     svc = ExtractionService(db)
     success_ids = []
     failed_ids = []
+    cancelled_count = 0
+    deleted_count = 0
 
     for task_id in data.task_ids:
         try:
             task = await svc.get_task_by_id(task_id)
             if not current_user.is_superuser and task.creator_id != current_user.id:
                 raise ForbiddenException("无权限删除该任务")
-            await svc.delete_failed_task(task_id)
+            action = await svc.delete_task(task_id)
+            if action == "cancelled":
+                cancelled_count += 1
+            else:
+                deleted_count += 1
             success_ids.append(task_id)
         except Exception as exc:
             failed_ids.append({"id": task_id, "reason": str(exc)})
@@ -218,6 +225,8 @@ async def batch_delete_failed_extractions(
         "failed": failed_ids,
         "total": len(data.task_ids),
         "success_count": len(success_ids),
+        "cancelled_count": cancelled_count,
+        "deleted_count": deleted_count,
     })
 
 

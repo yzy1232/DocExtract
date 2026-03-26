@@ -1,0 +1,1 @@
+const r="Asia/Shanghai";function i(t){if(!t)return null;if(t instanceof Date)return t;const n=String(t).trim();return n?/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(n)?new Date(`${n}Z`):new Date(n):null}function o(t,n="-"){const e=i(t);return!e||Number.isNaN(e.getTime())?n:e.toLocaleString("zh-CN",{timeZone:r,hour12:!1})}export{o as f};

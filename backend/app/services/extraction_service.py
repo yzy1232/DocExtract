@@ -506,6 +506,13 @@ class ExtractionService:
             return
         task.progress = progress
 
+    def _is_excel_document(self, document: Document) -> bool:
+        normalized_mime = normalize_mime_type(document.mime_type, document.name)
+        return (
+            normalized_mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            or (document.name and document.name.lower().endswith(".xlsx"))
+        )
+
     def _is_stale_running_task(self, task: ExtractionTask) -> bool:
         if task.status not in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING, TaskStatus.RETRYING):
             return False
@@ -575,21 +582,29 @@ class ExtractionService:
         await self.db.flush()
         await self.db.commit()
 
-        # 推送到 Celery 任务队列
-        try:
-            from app.tasks.extraction_tasks import run_extraction_task
-            celery_task = run_extraction_task.apply_async(
-                args=[task.id],
-                queue="extraction",
-                priority=self._priority_to_int(data.priority),
-            )
-            task.celery_task_id = celery_task.id
-            task.status = TaskStatus.QUEUED
-            task.progress_message = "任务已入队"
-        except Exception:
-            # Celery 不可用时，标记为待处理
-            task.status = TaskStatus.PENDING
-            task.progress_message = "队列不可用，任务待调度"
+        if self._is_excel_document(document):
+            # Excel 提取走规则链路，直接执行可避免“排队中”卡死观感。
+            task.status = TaskStatus.PROCESSING
+            task.progress_message = "Excel任务执行中"
+            await self.db.flush()
+            await self.db.commit()
+            await self.execute_extraction(task.id)
+        else:
+            # 推送到 Celery 任务队列
+            try:
+                from app.tasks.extraction_tasks import run_extraction_task
+                celery_task = run_extraction_task.apply_async(
+                    args=[task.id],
+                    queue="extraction",
+                    priority=self._priority_to_int(data.priority),
+                )
+                task.celery_task_id = celery_task.id
+                task.status = TaskStatus.QUEUED
+                task.progress_message = "任务已入队"
+            except Exception:
+                # Celery 不可用时，标记为待处理
+                task.status = TaskStatus.PENDING
+                task.progress_message = "队列不可用，任务待调度"
 
         await self.db.flush()
         await self.db.commit()
@@ -1420,19 +1435,27 @@ class ExtractionService:
         task.processing_time_ms = None
         task.retry_count = (task.retry_count or 0) + 1
 
-        try:
-            from app.tasks.extraction_tasks import run_extraction_task
-            celery_task = run_extraction_task.apply_async(
-                args=[task.id],
-                queue="extraction",
-                priority=self._priority_to_int(task.priority),
-            )
-            task.celery_task_id = celery_task.id
-            task.status = TaskStatus.QUEUED
-            task.progress_message = "任务已重新入队"
-        except Exception:
-            task.status = TaskStatus.PENDING
-            task.progress_message = "队列不可用，任务待调度"
+        if task.document and self._is_excel_document(task.document):
+            task.celery_task_id = None
+            task.status = TaskStatus.PROCESSING
+            task.progress_message = "Excel任务重启执行中"
+            await self.db.flush()
+            await self.db.commit()
+            await self.execute_extraction(task.id)
+        else:
+            try:
+                from app.tasks.extraction_tasks import run_extraction_task
+                celery_task = run_extraction_task.apply_async(
+                    args=[task.id],
+                    queue="extraction",
+                    priority=self._priority_to_int(task.priority),
+                )
+                task.celery_task_id = celery_task.id
+                task.status = TaskStatus.QUEUED
+                task.progress_message = "任务已重新入队"
+            except Exception:
+                task.status = TaskStatus.PENDING
+                task.progress_message = "队列不可用，任务待调度"
 
         await self.db.flush()
         await self.db.commit()
@@ -1440,13 +1463,38 @@ class ExtractionService:
         return task
 
     async def delete_failed_task(self, task_id: str):
+        await self.delete_task(task_id)
+
+    async def delete_task(self, task_id: str) -> str:
         task = await self.get_task_by_id(task_id)
-        if task.status != TaskStatus.FAILED:
-            raise ValidationException("仅失败任务可删除")
+        cancellable_statuses = {
+            TaskStatus.PENDING,
+            TaskStatus.QUEUED,
+        }
+        deletable_statuses = {
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }
+
+        if task.status in cancellable_statuses:
+            task.status = TaskStatus.CANCELLED
+            task.completed_at = datetime.now(timezone.utc)
+            task.progress = max(float(task.progress or 0.0), 1.0)
+            task.progress_message = "任务已取消"
+            if not task.error_message:
+                task.error_message = "task cancelled by user"
+            await self.db.flush()
+            await self.db.commit()
+            return "cancelled"
+
+        if task.status not in deletable_statuses:
+            raise ValidationException("仅待处理/排队中任务可取消，或已完成/失败/已取消任务可删除")
 
         await self.db.delete(task)
         await self.db.flush()
         await self.db.commit()
+        return "deleted"
 
     async def list_tasks(
         self,

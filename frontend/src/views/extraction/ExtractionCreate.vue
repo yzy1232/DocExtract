@@ -236,13 +236,9 @@ async function submit() {
         llm_provider: null,
         llm_model: selectedCfg ? selectedCfg.model_name : form.llm_config.model,
       }
-      const res = await extractionApi.batchCreate(batchPayload)
+      await extractionApi.batchCreate(batchPayload)
       ElMessage.success('批量提取任务已提交')
-      if (res.data && res.data.length > 0) {
-        router.push(`/extractions/${res.data[0].id}/result`)
-      } else {
-        router.push('/extractions')
-      }
+      router.push('/extractions')
     } else {
       const payload = {
         document_id: form.document_ids && form.document_ids.length === 1 ? form.document_ids[0] : form.document_id,
@@ -252,9 +248,9 @@ async function submit() {
         llm_model: selectedCfg ? selectedCfg.model_name : form.llm_config.model,
         extra_config: selectedCfg ? selectedCfg : form.llm_config,
       }
-      const res = await extractionApi.create(payload)
+      await extractionApi.create(payload)
       ElMessage.success('提取任务已提交')
-      router.push(`/extractions/${res.data.id}/result`)
+      router.push('/extractions')
     }
   } catch {
     ElMessage.error('提交失败，请重试')

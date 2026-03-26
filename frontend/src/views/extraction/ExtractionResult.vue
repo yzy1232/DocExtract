@@ -109,6 +109,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Download } from '@element-plus/icons-vue'
 import { extractionApi } from '@/api/index'
+import { formatDateToUTC8 } from '@/utils/datetime'
 
 const router = useRouter()
 const route = useRoute()
@@ -165,8 +166,7 @@ const statusLabelMap = {
 }
 
 function formatDate(str) {
-  if (!str) return '-'
-  return new Date(str).toLocaleString('zh-CN')
+  return formatDateToUTC8(str)
 }
 
 function formatValue(val) {

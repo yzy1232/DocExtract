@@ -67,18 +67,29 @@
                 v-for="(field, idx) in form.fields"
                 :key="idx"
                 class="field-item"
+                :class="{ 'is-drag-over': dragState.overIndex === idx }"
                 shadow="hover"
+                draggable="true"
+                @dragstart="onFieldDragStart(idx, $event)"
+                @dragover="onFieldDragOver(idx, $event)"
+                @drop="onFieldDrop(idx, $event)"
+                @dragend="onFieldDragEnd"
               >
                 <template #header>
                   <div style="display:flex;justify-content:space-between;align-items:center">
-                    <span style="font-size:13px;color:#64748b">字段 {{ idx + 1 }}</span>
-                    <el-button
-                      :icon="Delete"
-                      size="small"
-                      type="danger"
-                      text
-                      @click="removeField(idx)"
-                    />
+                    <div class="field-header-left">
+                      <el-icon class="drag-handle"><Rank /></el-icon>
+                      <span style="font-size:13px;color:#64748b">字段 {{ idx + 1 }}</span>
+                    </div>
+                    <div>
+                      <el-button
+                        :icon="Delete"
+                        size="small"
+                        type="danger"
+                        text
+                        @click="removeField(idx)"
+                      />
+                    </div>
                   </div>
                 </template>
 
@@ -180,7 +191,7 @@
 import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Plus, Delete } from '@element-plus/icons-vue'
+import { ArrowLeft, Plus, Delete, Rank } from '@element-plus/icons-vue'
 import { templateApi, documentApi } from '@/api/index'
 
 const router = useRouter()
@@ -213,6 +224,11 @@ const inferProgress = reactive({
   text: '等待开始...',
 })
 
+const dragState = reactive({
+  fromIndex: -1,
+  overIndex: -1,
+})
+
 const rules = {
   name: [{ required: true, message: '请输入模板名称', trigger: 'blur' }],
 }
@@ -242,10 +258,54 @@ function addField() {
     description: '',
     sort_order: form.fields.length,
   })
+  normalizeFieldOrder()
 }
 
 function removeField(idx) {
   form.fields.splice(idx, 1)
+  normalizeFieldOrder()
+}
+
+function normalizeFieldOrder() {
+  form.fields.forEach((field, idx) => {
+    field.sort_order = idx
+  })
+}
+
+function onFieldDragStart(idx, event) {
+  dragState.fromIndex = idx
+  dragState.overIndex = idx
+  if (event?.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', String(idx))
+  }
+}
+
+function onFieldDragOver(idx, event) {
+  event.preventDefault()
+  dragState.overIndex = idx
+  if (event?.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+}
+
+function onFieldDrop(toIndex, event) {
+  event.preventDefault()
+  const fromIndex = dragState.fromIndex
+  if (fromIndex < 0 || fromIndex === toIndex) {
+    onFieldDragEnd()
+    return
+  }
+
+  const moved = form.fields.splice(fromIndex, 1)[0]
+  form.fields.splice(toIndex, 0, moved)
+  normalizeFieldOrder()
+  onFieldDragEnd()
+}
+
+function onFieldDragEnd() {
+  dragState.fromIndex = -1
+  dragState.overIndex = -1
 }
 
 async function loadProcessedDocuments() {
@@ -385,6 +445,10 @@ async function generateFromDocument(forceOverwrite = false) {
       extraction_hints: field.extraction_hints || '',
       sort_order: field.sort_order ?? idx,
     }))
+    normalizeFieldOrder()
+
+    // AI 自动生成模板后默认切换为“立即发布”
+    form.status = 'active'
 
     console.info('[TemplateInfer][mapped-fields]', {
       returnedFieldCount: fieldsArray.length,
@@ -417,6 +481,7 @@ async function generateFromDocument(forceOverwrite = false) {
 }
 
 async function submit() {
+  normalizeFieldOrder()
   await formRef.value.validate()
   saving.value = true
   try {
@@ -476,6 +541,25 @@ onMounted(async () => {
 .field-item :deep(.el-card__header) {
   padding: 8px 16px;
   background: rgba(247, 241, 232, 0.7);
+}
+
+.field-item {
+  cursor: grab;
+}
+
+.field-item.is-drag-over {
+  outline: 2px dashed #1f6f5f;
+  outline-offset: 2px;
+}
+
+.field-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drag-handle {
+  color: #64748b;
 }
 
 .empty-fields {

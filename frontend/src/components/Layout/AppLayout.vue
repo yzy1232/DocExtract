@@ -126,8 +126,8 @@ const mobileMenuOpen = ref(false)
 
 const navItems = [
   { name: 'Dashboard', label: '工作台', description: '总览核心指标与系统状态', icon: House },
-  { name: 'TemplateList', label: '模板管理', description: '维护字段结构与模板版本', icon: Collection },
   { name: 'DocumentList', label: '文档管理', description: '上传、追踪并管理原始文档', icon: Document },
+  { name: 'TemplateList', label: '模板管理', description: '维护字段结构与模板版本', icon: Collection },
   { name: 'ExtractionList', label: '提取任务', description: '查看任务进度与结果产出', icon: MagicStick },
   { name: 'SystemConfig', label: '系统配置', description: '配置模型连接与运行参数', icon: Setting, adminOnly: true },
 ]

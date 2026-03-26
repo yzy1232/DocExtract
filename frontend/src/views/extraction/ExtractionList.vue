@@ -40,10 +40,10 @@
           <el-button
             type="danger"
             plain
-            :disabled="failedSelectedIds.length === 0"
+            :disabled="deletableSelectedIds.length === 0"
             @click="handleBatchDelete"
           >
-            批量删除失败任务
+            批量删除任务
           </el-button>
         </el-col>
         <el-col :span="7" style="text-align:right">
@@ -133,7 +133,7 @@
               重启
             </el-button>
             <el-button
-              v-if="row.status === 'failed'"
+              v-if="deletableStatuses.includes(row.status)"
               size="small"
               text
               type="danger"
@@ -169,6 +169,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh } from '@element-plus/icons-vue'
 import { extractionApi } from '@/api/index'
+import { formatDateToUTC8 } from '@/utils/datetime'
 
 const router = useRouter()
 const loading = ref(false)
@@ -192,11 +193,14 @@ const statusLabelMap = {
 const priorityTypeMap = { low: 'info', normal: '', high: 'warning', urgent: 'danger' }
 const priorityLabelMap = { low: '低', normal: '普通', high: '高', urgent: '紧急' }
 
+const deletableStatuses = ['pending', 'queued', 'completed', 'failed', 'cancelled']
 const failedSelectedIds = computed(() => selectedRows.value.filter(item => item.status === 'failed').map(item => item.id))
+const deletableSelectedIds = computed(() => selectedRows.value
+  .filter(item => deletableStatuses.includes(item.status))
+  .map(item => item.id))
 
 function formatDate(str) {
-  if (!str) return '-'
-  return new Date(str).toLocaleString('zh-CN')
+  return formatDateToUTC8(str)
 }
 
 function shortId(id) {
@@ -297,13 +301,18 @@ async function handleRestart(row) {
 }
 
 async function handleDelete(row) {
-  await ElMessageBox.confirm('确认删除该失败任务？删除后不可恢复。', '删除确认', { type: 'warning' })
+  const isCancellable = ['pending', 'queued'].includes(row.status)
+  await ElMessageBox.confirm(
+    isCancellable ? '确认取消该任务？' : '确认删除该任务？删除后不可恢复。',
+    isCancellable ? '取消确认' : '删除确认',
+    { type: 'warning' },
+  )
   try {
-    await extractionApi.delete(row.id)
-    ElMessage.success('任务已删除')
+    const res = await extractionApi.delete(row.id)
+    ElMessage.success(res?.data?.message || (isCancellable ? '任务已取消' : '任务已删除'))
     loadTasks()
   } catch {
-    ElMessage.error('任务删除失败')
+    ElMessage.error(isCancellable ? '任务取消失败' : '任务删除失败')
   }
 }
 
@@ -321,15 +330,17 @@ async function handleBatchRestart() {
 }
 
 async function handleBatchDelete() {
-  if (failedSelectedIds.value.length === 0) return
-  await ElMessageBox.confirm(`确认删除选中的 ${failedSelectedIds.value.length} 个失败任务？删除后不可恢复。`, '批量删除确认', { type: 'warning' })
+  if (deletableSelectedIds.value.length === 0) return
+  await ElMessageBox.confirm(`确认处理选中的 ${deletableSelectedIds.value.length} 个任务？待处理/排队中将取消，终态任务将删除。`, '批量处理确认', { type: 'warning' })
   try {
-    const res = await extractionApi.batchDelete(failedSelectedIds.value)
+    const res = await extractionApi.batchDelete(deletableSelectedIds.value)
     const successCount = res.data?.success_count ?? 0
-    ElMessage.success(`已删除 ${successCount} 个失败任务`)
+    const cancelledCount = res.data?.cancelled_count ?? 0
+    const deletedCount = res.data?.deleted_count ?? 0
+    ElMessage.success(`处理完成：取消 ${cancelledCount} 个，删除 ${deletedCount} 个（共 ${successCount} 个）`)
     loadTasks()
   } catch {
-    ElMessage.error('批量删除失败')
+    ElMessage.error('批量处理失败')
   }
 }
 
