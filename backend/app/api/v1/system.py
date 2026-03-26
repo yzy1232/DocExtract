@@ -10,7 +10,7 @@ from sqlalchemy import select, text, or_, func
 from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.schemas.common import ResponseBase
-from app.core.auth import get_current_user
+from app.core.auth import get_current_superuser, get_current_user
 from app.models.user import User, Role, UserStatus
 from app.models.system import LLMConfig, SystemConfig
 from app.schemas.user import AdminUserCreate, AdminUserUpdate
