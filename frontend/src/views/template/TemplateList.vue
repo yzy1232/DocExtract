@@ -122,6 +122,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
 import { templateApi } from '@/api/index'
+import { formatDateToUTC8 } from '@/utils/datetime'
 
 const router = useRouter()
 const loading = ref(false)
@@ -136,8 +137,7 @@ const statusLabelMap = { draft: '草稿', active: '已发布', deprecated: '已�
 const selectedIds = computed(() => selectedRows.value.map(item => item.id))
 
 function formatDate(str) {
-  if (!str) return '-'
-  return new Date(str).toLocaleString('zh-CN')
+  return formatDateToUTC8(str)
 }
 
 async function loadTemplates() {

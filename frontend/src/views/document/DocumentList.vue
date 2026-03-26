@@ -131,6 +131,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, Search, Document, Film, Picture } from '@element-plus/icons-vue'
 import { documentApi } from '@/api/index'
+import { formatDateToUTC8 } from '@/utils/datetime'
 
 const router = useRouter()
 const loading = ref(false)
@@ -166,8 +167,7 @@ function formatSize(bytes) {
 }
 
 function formatDate(str) {
-  if (!str) return '-'
-  return new Date(str).toLocaleString('zh-CN')
+  return formatDateToUTC8(str)
 }
 
 async function loadDocuments() {
