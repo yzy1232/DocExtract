@@ -530,10 +530,11 @@ class ExtractionService:
             if not task.progress_message or "入队" in task.progress_message or "待调度" in task.progress_message:
                 task.progress_message = "任务处理中"
             changed = True
-        elif runtime_state == "RETRY" and task.status != TaskStatus.RETRYING:
-            task.status = TaskStatus.RETRYING
-            task.progress_message = "任务重试中"
-            changed = True
+        elif runtime_state == "RETRY":
+            # Celery 可能出现短暂 RETRY 过渡态；避免新建任务被误显示为“重试中”。
+            # 仅当任务已处于重试流程（如手动重启失败任务）时保留该状态。
+            if task.status == TaskStatus.RETRYING:
+                task.progress_message = task.progress_message or "任务重试中"
 
         return changed
 
@@ -613,29 +614,21 @@ class ExtractionService:
         await self.db.flush()
         await self.db.commit()
 
-        if self._is_excel_document(document):
-            # Excel 提取走规则链路，直接执行可避免“排队中”卡死观感。
-            task.status = TaskStatus.PROCESSING
-            task.progress_message = "Excel任务执行中"
-            await self.db.flush()
-            await self.db.commit()
-            await self.execute_extraction(task.id)
-        else:
-            # 推送到 Celery 任务队列
-            try:
-                from app.tasks.extraction_tasks import run_extraction_task
-                celery_task = run_extraction_task.apply_async(
-                    args=[task.id],
-                    queue="extraction",
-                    priority=self._priority_to_int(data.priority),
-                )
-                task.celery_task_id = celery_task.id
-                task.status = TaskStatus.QUEUED
-                task.progress_message = "任务已入队"
-            except Exception:
-                # Celery 不可用时，标记为待处理
-                task.status = TaskStatus.PENDING
-                task.progress_message = "队列不可用，任务待调度"
+        # 推送到 Celery 任务队列（Excel 与非 Excel 统一异步执行，保证创建请求快速返回）
+        try:
+            from app.tasks.extraction_tasks import run_extraction_task
+            celery_task = run_extraction_task.apply_async(
+                args=[task.id],
+                queue="extraction",
+                priority=self._priority_to_int(data.priority),
+            )
+            task.celery_task_id = celery_task.id
+            task.status = TaskStatus.QUEUED
+            task.progress_message = "任务已入队"
+        except Exception:
+            # Celery 不可用时，标记为待处理
+            task.status = TaskStatus.PENDING
+            task.progress_message = "队列不可用，任务待调度"
 
         await self.db.flush()
         await self.db.commit()

@@ -82,7 +82,7 @@ async def get_stats(
     tmpl_stmt = select(func.count(Template.id)).where(Template.status != TemplateStatus.ARCHIVED)
     task_stmt = select(func.count(ExtractionTask.id))
     pending_stmt = select(func.count(ExtractionTask.id)).where(
-        ExtractionTask.status.in_([TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING])
+        ExtractionTask.status.in_([TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.PROCESSING, TaskStatus.RETRYING])
     )
 
     # 管理员看全局；普通用户仅看自己创建/上传的数据。

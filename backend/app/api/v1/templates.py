@@ -163,9 +163,10 @@ async def list_templates(
     current_user: User = Depends(get_current_user),
 ):
     svc = TemplateService(db)
+    creator_id = None if current_user.is_superuser else current_user.id
     templates, total = await svc.list_templates(
         page=page, page_size=page_size, keyword=keyword,
-        category_id=category_id, status=status, is_public=is_public,
+        category_id=category_id, status=status, is_public=is_public, creator_id=creator_id,
     )
     items = []
     for t in templates:
