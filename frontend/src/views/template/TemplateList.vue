@@ -64,9 +64,6 @@
             <el-tag size="small" type="info" round>{{ row.field_count ?? 0 }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="版本" width="80" align="center">
-          <template #default="{ row }">v{{ row.version }}</template>
-        </el-table-column>
         <el-table-column label="状态" width="100" align="center">
           <template #default="{ row }">
             <el-tag :type="statusTypeMap[row.status]" size="small">

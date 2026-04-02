@@ -130,6 +130,7 @@ const quickActions = [
   { label: '创建模板', icon: 'Plus', color: '#d1893f', tint: 'rgba(209, 137, 63, 0.14)', to: '/templates/create', description: '配置字段结构和提示词' },
   { label: '新建提取', icon: 'MagicStick', color: '#46796c', tint: 'rgba(70, 121, 108, 0.14)', to: '/extractions/create', description: '为文档发起新的抽取任务' },
   { label: '查看结果', icon: 'DataAnalysis', color: '#b86a3b', tint: 'rgba(184, 106, 59, 0.16)', to: '/extractions', description: '检查任务进度和结果产出' },
+  { label: '使用文档', icon: 'Reading', color: '#28596d', tint: 'rgba(40, 89, 109, 0.14)', to: '/guide', description: '查看功能说明与操作指南' },
 ]
 
 const overallHealthLabel = computed(() => {

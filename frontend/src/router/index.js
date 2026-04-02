@@ -81,6 +81,12 @@ const routes = [
         component: () => import('@/views/extraction/ExtractionResult.vue'),
         meta: { title: '提取结果', parent: 'ExtractionList' },
       },
+      {
+        path: 'guide',
+        name: 'UsageGuide',
+        component: () => import('@/views/guide/UsageGuide.vue'),
+        meta: { title: '使用文档', icon: 'Reading' },
+      },
       // 系统管理
       {
         path: 'system',

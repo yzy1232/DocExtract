@@ -4,7 +4,7 @@
       <div class="page-heading">
         <span class="page-kicker">TEMPLATE DETAIL</span>
         <h2 class="page-title">{{ template.name || '模板详情' }}</h2>
-        <p class="page-subtitle">查看模板版本、字段定义与系统提示词，并直接基于此模板发起新的提取任务。</p>
+        <p class="page-subtitle">查看模板字段定义与系统提示词，并直接基于此模板发起新的提取任务。</p>
       </div>
       <div class="page-actions">
         <el-button :icon="ArrowLeft" @click="router.push('/templates')">返回列表</el-button>
@@ -23,9 +23,8 @@
           <el-descriptions :column="2" border>
             <el-descriptions-item label="模板名称" :span="2">{{ template.name }}</el-descriptions-item>
             <el-descriptions-item label="描述" :span="2">{{ template.description || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="版本">v{{ template.version }}</el-descriptions-item>
             <el-descriptions-item label="创建时间">{{ formatDate(template.created_at) }}</el-descriptions-item>
-            <el-descriptions-item label="更新时间" :span="2">{{ formatDate(template.updated_at) }}</el-descriptions-item>
+            <el-descriptions-item label="更新时间">{{ formatDate(template.updated_at) }}</el-descriptions-item>
           </el-descriptions>
         </el-card>
 
@@ -93,6 +92,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Edit, MagicStick, Check, Close } from '@element-plus/icons-vue'
 import { templateApi } from '@/api/index'
+import { formatDateToUTC8 } from '@/utils/datetime'
 
 const router = useRouter()
 const route = useRoute()
@@ -103,8 +103,7 @@ const statusTypeMap = { draft: 'info', active: 'success', deprecated: 'warning',
 const statusLabelMap = { draft: '草稿', active: '已发布', deprecated: '已废弃', archived: '已归档' }
 
 function formatDate(str) {
-  if (!str) return '-'
-  return new Date(str).toLocaleString('zh-CN')
+  return formatDateToUTC8(str)
 }
 
 onMounted(async () => {

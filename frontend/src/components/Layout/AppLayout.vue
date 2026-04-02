@@ -113,7 +113,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Menu, Fold, Expand, House, Collection, Document, MagicStick, Setting, Compass, Timer } from '@element-plus/icons-vue'
+import { Menu, Fold, Expand, House, Collection, Document, MagicStick, Setting, Reading, Compass, Timer } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -129,6 +129,7 @@ const navItems = [
   { name: 'DocumentList', label: '文档管理', description: '上传、追踪并管理原始文档', icon: Document },
   { name: 'TemplateList', label: '模板管理', description: '维护字段结构与模板版本', icon: Collection },
   { name: 'ExtractionList', label: '提取任务', description: '查看任务进度与结果产出', icon: MagicStick },
+  { name: 'UsageGuide', label: '使用文档', description: '查看前端操作手册与常见问题', icon: Reading },
   { name: 'SystemConfig', label: '系统配置', description: '配置模型连接与运行参数', icon: Setting, adminOnly: true },
 ]
 
@@ -143,6 +144,7 @@ const pageDescriptions = {
   ExtractionList: '关注任务运行、优先级、完成率与结果状态。',
   ExtractionCreate: '为指定文档和模板快速发起新的抽取任务。',
   ExtractionResult: '集中查看字段结果、置信度与导出动作。',
+  UsageGuide: '按照推荐流程快速上手，并查看常见问题处理建议。',
   SystemConfig: '维护模型接入参数、默认策略和系统限额。',
 }
 

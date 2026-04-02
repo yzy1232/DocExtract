@@ -69,6 +69,13 @@ docker compose logs -f  # 查看日志
 
 默认管理员账号：`admin` / `admin123`（首次启动自动创建）
 
+### 前端文档入口
+
+- 侧边栏新增「使用文档」菜单，登录后可直接查看操作指南
+- 工作台「快捷操作」新增「使用文档」入口
+- 前端路由地址：`/guide`
+- 详细文档文件：`frontend/docs/usage-guide.md`
+
 ---
 
 ## 本地开发
@@ -132,6 +139,7 @@ Project1/
 │   ├── src/
 │   │   ├── views/               # 页面视图
 │   │   │   ├── Dashboard.vue
+│   │   │   ├── guide/           # 使用文档页面
 │   │   │   ├── template/        # 模板管理页面
 │   │   │   ├── document/        # 文档管理页面
 │   │   │   ├── extraction/      # 提取任务页面
@@ -141,6 +149,8 @@ Project1/
 │   │   ├── stores/              # Pinia 状态管理
 │   │   ├── router/              # Vue Router 路由
 │   │   └── utils/               # 工具函数
+│   ├── docs/
+│   │   └── usage-guide.md       # 前端使用手册（Markdown）
 │   ├── Dockerfile
 │   └── package.json
 ├── nginx/nginx.conf             # Nginx 反向代理配置
