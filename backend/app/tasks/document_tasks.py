@@ -4,22 +4,15 @@
 import asyncio
 from celery import Task
 from app.tasks.celery_app import celery_app
-
-
-_worker_loop = None
-
-
-def _get_worker_loop():
-    global _worker_loop
-    if _worker_loop is None or _worker_loop.is_closed():
-        _worker_loop = asyncio.new_event_loop()
-    return _worker_loop
+from app.tasks.worker_loop import get_worker_loop
 
 
 class AsyncTask(Task):
     """支持 async 的 Celery 任务基类"""
     def run_async(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        loop = get_worker_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
 
 
 @celery_app.task(
@@ -48,7 +41,7 @@ def parse_document_task(self, document_id: str):
                 raise
 
     try:
-        loop = _get_worker_loop()
+        loop = get_worker_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(_run())
     except Exception as exc:

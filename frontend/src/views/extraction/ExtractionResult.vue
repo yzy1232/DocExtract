@@ -8,8 +8,8 @@
       </div>
       <div class="page-actions">
         <el-button :icon="ArrowLeft" @click="router.push('/extractions')">返回列表</el-button>
-        <el-tag :type="statusTypeMap[task.status]" size="large">
-          {{ statusLabelMap[task.status] }}
+        <el-tag :type="statusTypeMap[displayStatus]" size="large">
+          {{ statusLabelMap[displayStatus] }}
         </el-tag>
         <template v-if="task.status === 'completed'">
           <el-button
@@ -34,11 +34,11 @@
     </section>
 
     <!-- 运行中进度条 -->
-    <el-card v-if="['pending', 'running', 'queued', 'processing', 'retrying'].includes(task.status)" shadow="never" class="progress-card">
+    <el-card v-if="showProgressCard" shadow="never" class="progress-card">
       <div class="progress-center">
         <el-progress type="circle" :percentage="smoothProgress" :width="120" :format="formatPercentage" />
         <div class="progress-desc">
-          <p class="progress-status">{{ statusLabelMap[task.status] }}</p>
+          <p class="progress-status">{{ statusLabelMap[displayStatus] }}</p>
           <p class="progress-hint">提取任务正在后台处理，请稍候…</p>
           <el-button text type="primary" @click="refreshTask">刷新状态</el-button>
         </div>
@@ -132,6 +132,7 @@ const loading = ref(false)
 const task = ref({})
 const fieldResults = ref([])
 const smoothProgress = ref(0)
+const shouldShowCompletionTransition = ref(false)
 const pagination = ref({
   page: 1,
   pageSize: 10,
@@ -144,6 +145,24 @@ let completedEmptyPollCount = 0
 const exportingFormat = ref('')
 const isExporting = computed(() => Boolean(exportingFormat.value))
 let exportingNotice = null
+const ACTIVE_STATUSES = ['pending', 'queued', 'running', 'processing', 'retrying']
+
+const targetProgress = computed(() => normalizeProgress(task.value.progress ?? 0))
+
+const isFinishingToCompleted = computed(() => {
+  return task.value.status === 'completed' && shouldShowCompletionTransition.value && smoothProgress.value + 0.2 < targetProgress.value
+})
+
+const showProgressCard = computed(() => {
+  return ACTIVE_STATUSES.includes(task.value.status) || isFinishingToCompleted.value
+})
+
+const displayStatus = computed(() => {
+  if (isFinishingToCompleted.value) {
+    return 'processing'
+  }
+  return task.value.status
+})
 
 const matrixColumns = computed(() => {
   if (!Array.isArray(fieldResults.value)) return []
@@ -207,32 +226,64 @@ function formatPercentage(percentage) {
 }
 
 function syncSmoothProgress() {
-  const target = normalizeProgress(task.value.progress ?? 0)
-  const isDone = ['completed', 'failed', 'cancelled'].includes(task.value.status)
+  const latestTarget = normalizeProgress(task.value.progress ?? 0)
+  const status = task.value.status
+  const isCompletionTransition = status === 'completed' && shouldShowCompletionTransition.value
 
-  if (isDone) {
-    smoothProgress.value = round2(target)
+  if ((status === 'failed' || status === 'cancelled') || (status === 'completed' && !isCompletionTransition)) {
+    smoothProgress.value = round2(latestTarget)
+    if (smoothTimer) {
+      clearInterval(smoothTimer)
+      smoothTimer = null
+    }
     return
   }
 
   if (!smoothTimer) {
     smoothTimer = setInterval(() => {
       const latestTarget = normalizeProgress(task.value.progress ?? 0)
+      const isDone = ['completed', 'failed', 'cancelled'].includes(task.value.status)
       const delta = latestTarget - smoothProgress.value
+
       if (Math.abs(delta) < 0.2) {
         smoothProgress.value = round2(latestTarget)
+        if (task.value.status === 'completed') {
+          shouldShowCompletionTransition.value = false
+        }
+        if (isDone) {
+          clearInterval(smoothTimer)
+          smoothTimer = null
+        }
         return
       }
-      const step = Math.max(0.4, Math.abs(delta) * 0.2)
-      smoothProgress.value = round2(smoothProgress.value + Math.sign(delta) * step)
+
+      const step = isDone
+        ? Math.max(1.2, Math.abs(delta) * 0.28)
+        : Math.max(0.4, Math.abs(delta) * 0.2)
+      const next = smoothProgress.value + Math.sign(delta) * step
+
+      if ((delta > 0 && next > latestTarget) || (delta < 0 && next < latestTarget)) {
+        smoothProgress.value = round2(latestTarget)
+      } else {
+        smoothProgress.value = round2(next)
+      }
     }, 120)
   }
 }
 
 async function loadTask() {
   try {
+    const previousStatus = task.value.status
     const res = await extractionApi.get(route.params.id)
     task.value = res.data || {}
+
+    if (task.value.status === 'completed' && ACTIVE_STATUSES.includes(previousStatus)) {
+      shouldShowCompletionTransition.value = true
+    }
+    if (ACTIVE_STATUSES.includes(task.value.status)) {
+      shouldShowCompletionTransition.value = true
+    }
+
     syncSmoothProgress()
 
     const taskFieldResults = Array.isArray(task.value.field_results)
@@ -426,7 +477,7 @@ async function exportResult(format) {
 
 function shouldPollTask() {
   // 任务还在处理中时，频繁轮询以获取partial chunks
-  if (['pending', 'queued', 'running', 'processing', 'retrying'].includes(task.value.status)) {
+  if (ACTIVE_STATUSES.includes(task.value.status)) {
     return true
   }
   // 任务完成但结果为空时，继续轮询作为备选

@@ -4,6 +4,7 @@
 import asyncio
 from app.tasks.celery_app import celery_app
 from app.core.exceptions import NotFoundException
+from app.tasks.worker_loop import get_worker_loop
 
 
 @celery_app.task(
@@ -32,8 +33,10 @@ def run_extraction_task(self, task_id: str):
                 raise
 
     try:
-        # 每次任务独立创建事件循环，避免 prefork 子进程复用旧 loop 导致跨 loop 错误。
-        asyncio.run(_run())
+        # 每个 worker 进程复用同一个事件循环，避免 DB/HTTP 异步资源跨 loop 复用。
+        loop = get_worker_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_run())
     except NotFoundException:
         # 任务已被删除或不存在时不重试，避免无效重试污染队列。
         return

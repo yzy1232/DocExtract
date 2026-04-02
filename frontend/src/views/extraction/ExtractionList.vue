@@ -69,7 +69,7 @@
         <el-table-column label="进度" width="140">
           <template #default="{ row }">
             <el-progress
-              v-if="['running', 'processing'].includes(row.status)"
+              v-if="shouldShowProgress(row)"
               :percentage="getSmoothProgress(row)"
               :stroke-width="8"
               :format="formatPercentage"
@@ -79,8 +79,8 @@
         </el-table-column>
         <el-table-column label="状态" width="110" align="center">
           <template #default="{ row }">
-            <el-tag :type="statusTypeMap[row.status]" size="small">
-              {{ statusLabelMap[row.status] }}
+            <el-tag :type="statusTypeMap[getDisplayStatus(row)]" size="small">
+              {{ statusLabelMap[getDisplayStatus(row)] }}
             </el-tag>
           </template>
         </el-table-column>
@@ -229,13 +229,36 @@ function getSmoothProgress(row) {
   return round2(normalizeProgress(row.progress ?? 0))
 }
 
+function isFinishingToCompleted(row) {
+  if (!row || row.status !== 'completed') return false
+  const target = normalizeProgress(row.progress ?? 0)
+  const smooth = getSmoothProgress(row)
+  return smooth + 0.2 < target
+}
+
+function shouldShowProgress(row) {
+  return ['running', 'processing', 'pending', 'queued', 'retrying'].includes(row.status) || isFinishingToCompleted(row)
+}
+
+function getDisplayStatus(row) {
+  if (isFinishingToCompleted(row)) {
+    return 'processing'
+  }
+  return row.status
+}
+
 function syncProgressTargets() {
   const aliveIds = new Set(tasks.value.map(item => item.id))
   tasks.value.forEach((item) => {
     const current = smoothProgressMap.value[item.id]
     const target = normalizeProgress(item.progress ?? 0)
     if (typeof current !== 'number') {
-      smoothProgressMap.value[item.id] = target
+      if (['pending', 'queued', 'running', 'processing', 'retrying'].includes(item.status)) {
+        // 新出现的进行中任务从0开始做平滑过渡，避免视觉上“直接从40%开始”。
+        smoothProgressMap.value[item.id] = 0
+      } else {
+        smoothProgressMap.value[item.id] = target
+      }
     }
   })
 
@@ -259,14 +282,17 @@ function startSmoothTicker() {
         return
       }
 
-      // 任务进行中使用较平滑的步进，完成态直接对齐到终值
-      if (['completed', 'failed', 'cancelled'].includes(item.status)) {
-        smoothProgressMap.value[id] = round2(target)
-        return
-      }
+      const isDone = ['completed', 'failed', 'cancelled'].includes(item.status)
+      const step = isDone
+        ? Math.max(1.2, Math.abs(delta) * 0.28)
+        : Math.max(0.3, Math.abs(delta) * 0.18)
 
-      const step = Math.max(0.3, Math.abs(delta) * 0.18)
-      smoothProgressMap.value[id] = round2(current + Math.sign(delta) * step)
+      const next = current + Math.sign(delta) * step
+      if ((delta > 0 && next > target) || (delta < 0 && next < target)) {
+        smoothProgressMap.value[id] = round2(target)
+      } else {
+        smoothProgressMap.value[id] = round2(next)
+      }
     })
   }, 120)
 }
@@ -353,12 +379,12 @@ function resetQuery() {
 onMounted(() => {
   loadTasks()
   startSmoothTicker()
-  // 每 10s 自动刷新正在运行的任务
+  // 每 3s 自动刷新正在运行的任务，减少进度条长时间停滞感
   timer = setInterval(() => {
     if (tasks.value.some(t => ['pending', 'running', 'processing', 'queued', 'retrying'].includes(t.status))) {
       loadTasks()
     }
-  }, 10000)
+  }, 3000)
 })
 
 onBeforeUnmount(() => {

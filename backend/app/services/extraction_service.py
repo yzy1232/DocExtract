@@ -31,8 +31,6 @@ from app.processors.mime_resolver import normalize_mime_type
 
 EXTRACTION_CHUNK_SIZE = 3000
 EXTRACTION_CHUNK_OVERLAP = 500
-EXTRACTION_CROSS_VALIDATE_ROUNDS = 2
-EXTRACTION_MIN_AGREEMENT = 2
 EXTRACTION_STALE_TIMEOUT_SECONDS = 300
 LLM_IO_LOG_MAX_CHARS = 8000
 EXCEL_FIELD_SAMPLE_LIMIT = 60
@@ -61,6 +59,34 @@ class ExtractionService:
         task.updated_at = datetime.now(timezone.utc)
         await self.db.flush()
         await self.db.commit()
+
+    def _parse_document_in_thread(self, processor, file_content: bytes, filename: str):
+        """在线程中执行解析，避免阻塞主事件循环导致进度长时间不刷新。"""
+        return asyncio.run(processor.parse(file_content, filename))
+
+    async def _parse_document_with_heartbeat(
+        self,
+        task: ExtractionTask,
+        processor,
+        file_content: bytes,
+        filename: str,
+        start_progress: float,
+        max_progress: float,
+    ):
+        """执行文档解析并在解析期间周期性推进进度。"""
+        parse_task = asyncio.create_task(
+            asyncio.to_thread(self._parse_document_in_thread, processor, file_content, filename)
+        )
+
+        heartbeat_progress = max(float(start_progress), float(task.progress or 0.0))
+        await self._checkpoint_progress(task, heartbeat_progress, "文档解析中...")
+
+        while True:
+            try:
+                return await asyncio.wait_for(asyncio.shield(parse_task), timeout=2.0)
+            except asyncio.TimeoutError:
+                heartbeat_progress = min(float(max_progress), heartbeat_progress + 1.2)
+                await self._checkpoint_progress(task, heartbeat_progress, "文档解析中...")
 
     def _truncate_log_text(self, value: Any, max_chars: Optional[int] = None) -> str:
         """日志文本截断，防止大文档导致日志过长。"""
@@ -309,7 +335,10 @@ class ExtractionService:
         parse_result,
     ) -> Tuple[Dict[str, Any], Dict[str, Any], float, int]:
         """Excel 专用提取流程：规则识别表头并直接落库（不调用LLM）。"""
-        await self._checkpoint_progress(task, 40.0, "Excel表头识别中...")
+        excel_stage_start = 60.0
+        excel_stage_span = 35.0
+
+        await self._checkpoint_progress(task, excel_stage_start, "Excel表头识别中...")
 
         sheets = self._collect_excel_sheet_rows(parse_result)
         if not sheets:
@@ -375,7 +404,7 @@ class ExtractionService:
 
             await self._checkpoint_progress(
                 task,
-                40.0 + (idx / len(sheets)) * 45.0,
+                excel_stage_start + (idx / len(sheets)) * excel_stage_span,
                 f"Excel表头识别完成（{idx}/{len(sheets)}）",
             )
 
@@ -666,7 +695,7 @@ class ExtractionService:
 
         task.status = TaskStatus.PROCESSING
         task.started_at = datetime.now(timezone.utc)
-        await self._checkpoint_progress(task, 5.0, "任务启动")
+        await self._checkpoint_progress(task, 1.0, "任务启动")
         await self._log(task_id, "info", "extraction_start", "开始执行提取任务")
 
         start_time = time.time()
@@ -681,24 +710,44 @@ class ExtractionService:
 
             from app.processors.factory import get_processor
             normalized_mime = normalize_mime_type(document.mime_type, document.name)
+            is_excel_doc = (
+                normalized_mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" or
+                (document.name and document.name.lower().endswith(".xlsx"))
+            )
+
+            if is_excel_doc:
+                download_progress = 50.0
+                parse_heartbeat_start = 50.0
+                parse_heartbeat_max = 59.0
+                parse_done_progress = 60.0
+            else:
+                download_progress = 2.0
+                parse_heartbeat_start = 2.0
+                parse_heartbeat_max = 4.8
+                parse_done_progress = 5.0
+
+            await self._checkpoint_progress(task, download_progress, "文档下载完成")
+
             processor = get_processor(normalized_mime)
             if not processor:
                 raise ValidationException(f"文档不支持解析，MIME={normalized_mime}")
-            parse_result = await processor.parse(file_content, document.name)
+            parse_result = await self._parse_document_with_heartbeat(
+                task,
+                processor,
+                file_content,
+                document.name,
+                start_progress=parse_heartbeat_start,
+                max_progress=parse_heartbeat_max,
+            )
             document_content = parse_result.full_text
 
-            await self._checkpoint_progress(task, 30.0, "文档解析完成")
+            await self._checkpoint_progress(task, parse_done_progress, "文档解析完成")
 
             logger.info(
                 "Excel detection params: normalized_mime=%s, document_name=%s",
                 normalized_mime,
                 document.name,
             )
-            is_excel_doc = (
-                normalized_mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" or
-                (document.name and document.name.lower().endswith(".xlsx"))
-            )
-
             result_row_query = await self.db.execute(
                 select(ExtractionResult).where(ExtractionResult.task_id == task_id)
             )
@@ -760,34 +809,33 @@ class ExtractionService:
                 for f in template.fields
             ]
 
-            await self._checkpoint_progress(task, 40.0, "正在调用LLM提取...")
+            llm_stage_start = 5.0
+            llm_stage_end = 85.0
+            llm_stage_span = llm_stage_end - llm_stage_start
+
+            await self._checkpoint_progress(task, llm_stage_start, "正在调用LLM提取...")
 
             adapter, llm_config = await self._resolve_task_adapter_and_config(task)
             chunk_size = getattr(settings, "EXTRACTION_CHUNK_SIZE", EXTRACTION_CHUNK_SIZE)
             chunk_overlap = getattr(settings, "EXTRACTION_CHUNK_OVERLAP", EXTRACTION_CHUNK_OVERLAP)
-            cross_validate_rounds = max(1, int(getattr(settings, "EXTRACTION_CROSS_VALIDATE_ROUNDS", EXTRACTION_CROSS_VALIDATE_ROUNDS)))
-            min_agreement = max(1, int(getattr(settings, "EXTRACTION_MIN_AGREEMENT", EXTRACTION_MIN_AGREEMENT)))
-            min_agreement = min(min_agreement, cross_validate_rounds)
             content_chunks = self._split_text_with_overlap(document_content, chunk_size, chunk_overlap)
             chunk_concurrency = max(1, int(getattr(settings, "EXTRACTION_CHUNK_CONCURRENCY", EXTRACTION_CHUNK_CONCURRENCY)))
             
             # 诊断日志：记录分段信息
             logger.info(
-                "启动分段并发提取 task_id=%s doc_len=%s chunk_size=%s overlap=%s total_chunks=%s concurrency=%s rounds=%s",
+                "启动分段并发提取 task_id=%s doc_len=%s chunk_size=%s overlap=%s total_chunks=%s concurrency=%s",
                 task_id,
                 len(document_content),
                 chunk_size,
                 chunk_overlap,
                 len(content_chunks),
                 chunk_concurrency,
-                cross_validate_rounds,
             )
 
             parsed_chunks = []
-            chunk_round_parsed = []
             total_tokens = 0
             total_chunks = len(content_chunks)
-            total_calls = max(1, total_chunks * cross_validate_rounds)
+            total_calls = max(1, total_chunks)
             completed_calls = 0
             field_names = [f.name for f in template.fields]
             chunk_semaphore = asyncio.Semaphore(chunk_concurrency)
@@ -804,7 +852,7 @@ class ExtractionService:
 
             chunk_tasks = [
                 asyncio.create_task(
-                    self._extract_single_chunk_with_cross_validation(
+                    self._extract_single_chunk(
                         task_id=task_id,
                         chunk_index=idx,
                         total_chunks=total_chunks,
@@ -813,9 +861,6 @@ class ExtractionService:
                         llm_config=llm_config,
                         template=template,
                         fields_data=fields_data,
-                        field_names=field_names,
-                        cross_validate_rounds=cross_validate_rounds,
-                        min_agreement=min_agreement,
                         semaphore=chunk_semaphore,
                     )
                 )
@@ -824,71 +869,89 @@ class ExtractionService:
             logger.info("已创建 %d 个并发chunk任务", len(chunk_tasks))
 
             chunk_result_map: Dict[int, Dict[str, Any]] = {}
+            pending_chunk_tasks = set(chunk_tasks)
+            wait_heartbeat_progress = llm_stage_start
             try:
-                for done in asyncio.as_completed(chunk_tasks):
-                    chunk_result = await done
-                    idx = chunk_result["chunk_index"]
-                    chunk_result_map[idx] = chunk_result
-
-                    total_tokens += chunk_result["token_used"]
-                    completed_calls += chunk_result["call_count"]
-
-                    partial_chunks = list((extraction_result.raw_result or {}).get("partial_chunks", []))
-                    chunk_preview = {
-                        "chunk_index": idx,
-                        "chunk_total": total_chunks,
-                        "fields": self._build_structured_preview_from_chunk(chunk_result["chunk_consensus"]),
-                        "records": chunk_result["chunk_consensus"].get("records", []),
-                    }
-                    partial_chunks.append(chunk_preview)
-                    partial_chunks.sort(key=lambda x: x.get("chunk_index", 0))
-                    if len(partial_chunks) > 200:
-                        partial_chunks = partial_chunks[-200:]
-
-                    processed_chunks = len(chunk_result_map)
-                    task.progress_message = f"正在并行分段提取（已完成分片 {processed_chunks}/{total_chunks}）..."
-                    extraction_result.raw_result = {
-                        "stage": "processing",
-                        "total_chunks": total_chunks,
-                        "processed_chunks": processed_chunks,
-                        "partial_chunks": partial_chunks,
-                        "latest_chunk": chunk_preview,
-                        "cross_validate_rounds": cross_validate_rounds,
-                        "min_agreement": min_agreement,
-                        "chunk_concurrency": chunk_concurrency,
-                    }
-                    extraction_result.structured_result = chunk_preview["fields"]
-                    
-                    # 【改进】每个chunk完成后立即持久化结果，支持前端实时流式显示
-                    await self.db.flush()
-                    await self.db.commit()
-                    
-                    # 诊断日志：记录chunk完成
-                    logger.info(
-                        "Chunk完成 task_id=%s chunk_idx=%s/%s fields=%d tokens=%s progress=%d%%",
-                        task_id,
-                        processed_chunks,
-                        total_chunks,
-                        len(chunk_preview["fields"]),
-                        chunk_result["token_used"],
-                        40 + int((completed_calls / total_calls) * 40),
+                while pending_chunk_tasks:
+                    done_tasks, pending_chunk_tasks = await asyncio.wait(
+                        pending_chunk_tasks,
+                        timeout=2.0,
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
-                    
-                    await self._checkpoint_progress(
-                        task,
-                        40.0 + (completed_calls / total_calls) * 40.0,
-                        task.progress_message,
-                    )
+
+                    if not done_tasks:
+                        wait_heartbeat_progress = min(llm_stage_end - 1.0, wait_heartbeat_progress + 0.8)
+                        heartbeat_message = task.progress_message or "正在并行分段提取..."
+                        await self._checkpoint_progress(
+                            task,
+                            wait_heartbeat_progress,
+                            heartbeat_message,
+                        )
+                        continue
+
+                    for done in done_tasks:
+                        chunk_result = done.result()
+                        idx = chunk_result["chunk_index"]
+                        chunk_result_map[idx] = chunk_result
+
+                        total_tokens += chunk_result["token_used"]
+                        completed_calls += 1
+
+                        partial_chunks = list((extraction_result.raw_result or {}).get("partial_chunks", []))
+                        chunk_preview = {
+                            "chunk_index": idx,
+                            "chunk_total": total_chunks,
+                            "fields": self._build_structured_preview_from_chunk(chunk_result["chunk_parsed"]),
+                            "records": chunk_result["chunk_parsed"].get("records", []),
+                        }
+                        partial_chunks.append(chunk_preview)
+                        partial_chunks.sort(key=lambda x: x.get("chunk_index", 0))
+                        if len(partial_chunks) > 200:
+                            partial_chunks = partial_chunks[-200:]
+
+                        processed_chunks = len(chunk_result_map)
+                        task.progress_message = f"正在并行分段提取（已完成分片 {processed_chunks}/{total_chunks}）..."
+                        extraction_result.raw_result = {
+                            "stage": "processing",
+                            "total_chunks": total_chunks,
+                            "processed_chunks": processed_chunks,
+                            "partial_chunks": partial_chunks,
+                            "latest_chunk": chunk_preview,
+                            "chunk_concurrency": chunk_concurrency,
+                        }
+                        extraction_result.structured_result = chunk_preview["fields"]
+
+                        # 【改进】每个chunk完成后立即持久化结果，支持前端实时流式显示
+                        await self.db.flush()
+                        await self.db.commit()
+
+                        # 诊断日志：记录chunk完成
+                        exact_progress = llm_stage_start + (completed_calls / total_calls) * llm_stage_span
+                        logger.info(
+                            "Chunk完成 task_id=%s chunk_idx=%s/%s fields=%d tokens=%s progress=%d%%",
+                            task_id,
+                            processed_chunks,
+                            total_chunks,
+                            len(chunk_preview["fields"]),
+                            chunk_result["token_used"],
+                            int(exact_progress),
+                        )
+
+                        wait_heartbeat_progress = max(wait_heartbeat_progress, exact_progress)
+                        await self._checkpoint_progress(
+                            task,
+                            exact_progress,
+                            task.progress_message,
+                        )
             except Exception:
-                for t in chunk_tasks:
+                for t in pending_chunk_tasks:
                     if not t.done():
                         t.cancel()
                 raise
 
             for idx in range(1, total_chunks + 1):
                 chunk_info = chunk_result_map[idx]
-                chunk_round_parsed.append(chunk_info["round_results"])
-                parsed_chunks.append(chunk_info["chunk_consensus"])
+                parsed_chunks.append(chunk_info["chunk_parsed"])
 
             task.token_used = total_tokens
 
@@ -997,11 +1060,8 @@ class ExtractionService:
             # 保存汇总结果
             extraction_result.raw_result = {
                 "stage": "completed",
-                "chunk_rounds": chunk_round_parsed,
                 "chunks": parsed_chunks,
                 "merged": parsed,
-                "cross_validate_rounds": cross_validate_rounds,
-                "min_agreement": min_agreement,
             }
             extraction_result.structured_result = structured_result
             extraction_result.overall_confidence = overall_confidence
@@ -1026,7 +1086,7 @@ class ExtractionService:
         await self.db.commit()
         return task
 
-    async def _extract_single_chunk_with_cross_validation(
+    async def _extract_single_chunk(
         self,
         task_id: str,
         chunk_index: int,
@@ -1036,12 +1096,9 @@ class ExtractionService:
         llm_config,
         template,
         fields_data: List[Dict[str, Any]],
-        field_names: List[str],
-        cross_validate_rounds: int,
-        min_agreement: int,
         semaphore: asyncio.Semaphore,
     ) -> Dict[str, Any]:
-        """异步执行单个切片的多轮抽取与一致性合并。"""
+        """异步执行单个切片的单轮抽取。"""
         async with semaphore:
             logger.info(
                 "开始处理Chunk task_id=%s chunk=%d/%d content_len=%d",
@@ -1057,62 +1114,38 @@ class ExtractionService:
                     f"{chunk_content}"
                 )
 
-            round_results: List[Dict[str, Any]] = []
-            token_used = 0
-
-            for round_idx in range(1, cross_validate_rounds + 1):
-                round_prompt_content = (
-                    f"{chunk_content}\n\n"
-                    f"[交叉验证轮次 {round_idx}/{cross_validate_rounds}]"
-                )
-                messages = self.prompt_engine.build_extraction_messages(
-                    document_content=round_prompt_content,
-                    template_fields=fields_data,
-                    system_prompt=template.system_prompt,
-                    extraction_prompt_template=template.extraction_prompt_template,
-                    few_shot_examples=template.few_shot_examples,
-                )
-
-                logger.info(
-                    "llm_input task_id=%s chunk=%s/%s round=%s/%s model=%s messages=%s",
-                    task_id,
-                    chunk_index,
-                    total_chunks,
-                    round_idx,
-                    cross_validate_rounds,
-                    llm_config.model,
-                    self._truncate_log_text(messages),
-                )
-
-                llm_response = await adapter.chat(messages, llm_config)
-                logger.info(
-                    "llm_output task_id=%s chunk=%s/%s round=%s/%s model=%s tokens=%s content=%s",
-                    task_id,
-                    chunk_index,
-                    total_chunks,
-                    round_idx,
-                    cross_validate_rounds,
-                    llm_config.model,
-                    llm_response.total_tokens,
-                    self._truncate_log_text(llm_response.content),
-                )
-
-                token_used += llm_response.total_tokens or 0
-                parsed_round = self.prompt_engine.parse_llm_response(llm_response.content)
-                round_results.append(parsed_round)
-
-            chunk_consensus = self._consensus_chunk_parsed_results(
-                round_results,
-                field_names,
-                min_agreement,
+            messages = self.prompt_engine.build_extraction_messages(
+                document_content=chunk_content,
+                template_fields=fields_data,
+                system_prompt=template.system_prompt,
+                extraction_prompt_template=template.extraction_prompt_template,
+                few_shot_examples=template.few_shot_examples,
             )
+            logger.info(
+                "llm_input task_id=%s chunk=%s/%s model=%s messages=%s",
+                task_id,
+                chunk_index,
+                total_chunks,
+                llm_config.model,
+                self._truncate_log_text(messages),
+            )
+            llm_response = await adapter.chat(messages, llm_config)
+            logger.info(
+                "llm_output task_id=%s chunk=%s/%s model=%s tokens=%s content=%s",
+                task_id,
+                chunk_index,
+                total_chunks,
+                llm_config.model,
+                llm_response.total_tokens,
+                self._truncate_log_text(llm_response.content),
+            )
+            token_used = llm_response.total_tokens or 0
+            chunk_parsed = self.prompt_engine.parse_llm_response(llm_response.content)
 
             return {
                 "chunk_index": chunk_index,
-                "round_results": round_results,
-                "chunk_consensus": chunk_consensus,
+                "chunk_parsed": chunk_parsed,
                 "token_used": token_used,
-                "call_count": cross_validate_rounds,
             }
 
     def _split_text_with_overlap(self, text: str, chunk_size: int, overlap: int) -> List[str]:
@@ -1216,113 +1249,6 @@ class ExtractionService:
             "fields": merged_fields,
             "records": merged_records,
             "extraction_notes": " | ".join(notes[:5]),
-        }
-
-    def _consensus_chunk_parsed_results(
-        self,
-        parsed_rounds: List[Dict[str, Any]],
-        field_names: List[str],
-        min_agreement: int,
-    ) -> Dict[str, Any]:
-        """对同一切片多轮抽取做交叉验证，输出一致性结果。"""
-        record_votes: Dict[str, Dict[str, Any]] = {}
-        field_candidates: Dict[str, Dict[str, int]] = {name: {} for name in field_names}
-        field_candidate_values: Dict[str, Dict[str, Any]] = {name: {} for name in field_names}
-        field_confidences: Dict[str, List[float]] = {name: [] for name in field_names}
-        field_sources: Dict[str, str] = {name: "" for name in field_names}
-
-        for parsed in parsed_rounds:
-            if not isinstance(parsed, dict):
-                continue
-
-            fields = parsed.get("fields", {})
-            if isinstance(fields, dict):
-                for field_name in field_names:
-                    field_obj = fields.get(field_name, {})
-                    if not isinstance(field_obj, dict):
-                        continue
-
-                    value = field_obj.get("value")
-                    if isinstance(value, list):
-                        for item in value:
-                            if item is None or item == "":
-                                continue
-                            item_key = self._stable_dump(item)
-                            field_candidates[field_name][item_key] = field_candidates[field_name].get(item_key, 0) + 1
-                            field_candidate_values[field_name][item_key] = item
-                    elif value is not None and value != "":
-                        value_key = self._stable_dump(value)
-                        field_candidates[field_name][value_key] = field_candidates[field_name].get(value_key, 0) + 1
-                        field_candidate_values[field_name][value_key] = value
-
-                    confidence = field_obj.get("confidence", 0.0)
-                    try:
-                        confidence = float(confidence)
-                    except (TypeError, ValueError):
-                        confidence = 0.0
-                    if confidence > 0:
-                        field_confidences[field_name].append(confidence)
-
-                    source_text = str(field_obj.get("source_text") or "")
-                    if len(source_text) > len(field_sources[field_name]):
-                        field_sources[field_name] = source_text
-
-            records = parsed.get("records", [])
-            if not isinstance(records, list):
-                continue
-
-            for record in records:
-                if not isinstance(record, dict):
-                    continue
-                normalized_record = {k: record.get(k) for k in field_names}
-                rec_key = self._stable_dump(normalized_record)
-                if rec_key not in record_votes:
-                    record_votes[rec_key] = {"count": 0, "record": normalized_record}
-                record_votes[rec_key]["count"] += 1
-
-        agreed_records = [
-            v["record"]
-            for v in sorted(record_votes.values(), key=lambda x: x["count"], reverse=True)
-            if v["count"] >= min_agreement
-        ]
-
-        if not agreed_records:
-            fallback = sorted(record_votes.values(), key=lambda x: x["count"], reverse=True)
-            agreed_records = [x["record"] for x in fallback[:1]]
-
-        merged_fields: Dict[str, Dict[str, Any]] = {}
-        for field_name in field_names:
-            values_from_records: List[Any] = []
-            for record in agreed_records:
-                self._append_unique_value(values_from_records, record.get(field_name))
-
-            voted_values = [
-                field_candidate_values[field_name][k]
-                for k, c in sorted(field_candidates[field_name].items(), key=lambda x: x[1], reverse=True)
-                if c >= min_agreement
-            ]
-
-            chosen_values = values_from_records if values_from_records else voted_values
-            if len(chosen_values) == 0:
-                merged_value = None
-            elif len(chosen_values) == 1:
-                merged_value = chosen_values[0]
-            else:
-                merged_value = chosen_values
-
-            conf_list = field_confidences[field_name]
-            avg_conf = sum(conf_list) / len(conf_list) if conf_list else 0.0
-
-            merged_fields[field_name] = {
-                "value": merged_value,
-                "confidence": round(avg_conf, 4),
-                "source_text": field_sources[field_name],
-            }
-
-        return {
-            "fields": merged_fields,
-            "records": agreed_records,
-            "extraction_notes": f"cross_validate_rounds={len(parsed_rounds)}, min_agreement={min_agreement}",
         }
 
     def _stable_dump(self, value: Any) -> str:
