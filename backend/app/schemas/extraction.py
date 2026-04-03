@@ -121,6 +121,8 @@ class ExtractionTaskOut(BaseModel):
     id: str
     document_id: str
     template_id: Optional[str] = None
+    document_name: Optional[str] = None
+    template_name: Optional[str] = None
     status: TaskStatus
     priority: TaskPriority
     llm_provider: Optional[str] = None

@@ -60,8 +60,8 @@
         <el-card header="任务信息" shadow="never">
           <el-descriptions :column="1" size="small" border>
             <el-descriptions-item label="任务ID">#{{ task.id }}</el-descriptions-item>
-            <el-descriptions-item label="文档">{{ task.document?.original_filename ?? '-' }}</el-descriptions-item>
-            <el-descriptions-item label="模板">{{ task.template?.name ?? '-' }}</el-descriptions-item>
+            <el-descriptions-item label="文档">{{ task.document_name ?? task.document?.display_name ?? task.document?.name ?? '-' }}</el-descriptions-item>
+            <el-descriptions-item label="模板">{{ task.template_name ?? task.template?.name ?? '-' }}</el-descriptions-item>
             <el-descriptions-item label="模型">{{ task.llm_model ?? '-' }}</el-descriptions-item>
             <el-descriptions-item label="创建时间">{{ formatDate(task.created_at) }}</el-descriptions-item>
             <el-descriptions-item label="完成时间">{{ formatDate(task.completed_at) }}</el-descriptions-item>

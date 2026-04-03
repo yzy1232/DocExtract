@@ -134,7 +134,13 @@ async def get_extraction(
     task = await svc.get_task_by_id(task_id)
     if not current_user.is_superuser and task.creator_id != current_user.id:
         raise ForbiddenException("无权限查看该任务")
-    return ResponseBase(data=ExtractionTaskOut.model_validate(task))
+    item = ExtractionTaskOut.model_validate(task)
+    item.document_name = (
+        task.document.display_name or task.document.name
+        if task.document else None
+    )
+    item.template_name = task.template.name if task.template else None
+    return ResponseBase(data=item)
 
 
 @router.post("/{task_id}/restart", response_model=ResponseBase[ExtractionTaskOut], summary="重启失败任务")
