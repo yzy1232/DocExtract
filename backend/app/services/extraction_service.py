@@ -52,7 +52,12 @@ class ExtractionService:
         message: Optional[str] = None,
     ):
         """持久化任务进度，保证轮询可见中间态。"""
-        task.progress = round(max(0.0, min(100.0, float(progress))), 2)
+        clamped_progress = max(0.0, min(100.0, float(progress)))
+        current_progress = max(0.0, min(100.0, float(task.progress or 0.0)))
+        # 进行中任务只允许进度前进，避免并发心跳/旧响应导致的回退。
+        if task.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            clamped_progress = max(current_progress, clamped_progress)
+        task.progress = round(clamped_progress, 2)
         if message is not None:
             task.progress_message = message
         # 每次进度落库都强制刷新时间戳，作为“收到阶段结果后重置超时计时器”的心跳。
@@ -937,10 +942,11 @@ class ExtractionService:
                             int(exact_progress),
                         )
 
-                        wait_heartbeat_progress = max(wait_heartbeat_progress, exact_progress)
+                        progress_to_persist = max(wait_heartbeat_progress, exact_progress)
+                        wait_heartbeat_progress = progress_to_persist
                         await self._checkpoint_progress(
                             task,
-                            exact_progress,
+                            progress_to_persist,
                             task.progress_message,
                         )
             except Exception:

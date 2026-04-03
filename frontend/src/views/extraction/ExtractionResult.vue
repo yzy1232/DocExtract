@@ -145,6 +145,7 @@ let completedEmptyPollCount = 0
 const exportingFormat = ref('')
 const isExporting = computed(() => Boolean(exportingFormat.value))
 let exportingNotice = null
+let loadRequestSeq = 0
 const ACTIVE_STATUSES = ['pending', 'queued', 'running', 'processing', 'retrying']
 
 const targetProgress = computed(() => normalizeProgress(task.value.progress ?? 0))
@@ -272,22 +273,26 @@ function syncSmoothProgress() {
 }
 
 async function loadTask() {
+  const requestSeq = ++loadRequestSeq
   try {
     const previousStatus = task.value.status
     const res = await extractionApi.get(route.params.id)
-    task.value = res.data || {}
+    if (requestSeq !== loadRequestSeq) return
 
-    if (task.value.status === 'completed' && ACTIVE_STATUSES.includes(previousStatus)) {
+    const latestTask = res.data || {}
+    task.value = latestTask
+
+    if (latestTask.status === 'completed' && ACTIVE_STATUSES.includes(previousStatus)) {
       shouldShowCompletionTransition.value = true
     }
-    if (ACTIVE_STATUSES.includes(task.value.status)) {
+    if (ACTIVE_STATUSES.includes(latestTask.status)) {
       shouldShowCompletionTransition.value = true
     }
 
     syncSmoothProgress()
 
-    const taskFieldResults = Array.isArray(task.value.field_results)
-      ? task.value.field_results.map((item) => ({
+    const taskFieldResults = Array.isArray(latestTask.field_results)
+      ? latestTask.field_results.map((item) => ({
           field_name: item.field_name,
           field_label: item.field_name,
           value: item.normalized_value ?? item.raw_value,
@@ -299,7 +304,7 @@ async function loadTask() {
     let previewRows = []
     
     // 【新增】优先从raw_result.partial_chunks中构建即时结果（流式显示已完成chunks）
-    const rawResult = task.value.raw_result || {}
+    const rawResult = latestTask.raw_result || {}
     const partialChunks = Array.isArray(rawResult.partial_chunks) ? rawResult.partial_chunks : []
     
     if (partialChunks.length > 0) {
@@ -331,6 +336,7 @@ async function loadTask() {
           page: pagination.value.page,
           page_size: pagination.value.pageSize,
         })
+        if (requestSeq !== loadRequestSeq) return
         const resultData = rRes.data || {}
         const structured = resultData.structured_result || {}
         if (Array.isArray(structured.columns) && Array.isArray(structured.rows)) {
@@ -365,11 +371,14 @@ async function loadTask() {
             : []
         }
       } catch {
+        if (requestSeq !== loadRequestSeq) return
         previewRows = []
       }
     }
 
-    if (task.value.status === 'completed') {
+    if (requestSeq !== loadRequestSeq) return
+
+    if (latestTask.status === 'completed') {
       fieldResults.value = previewRows.length > 0 ? previewRows : taskFieldResults
       if (fieldResults.value.length === 0) {
         completedEmptyPollCount += 1
@@ -382,7 +391,9 @@ async function loadTask() {
       completedEmptyPollCount = 0
     }
   } catch {
-    ElMessage.error('加载任务失败')
+    if (requestSeq === loadRequestSeq) {
+      ElMessage.error('加载任务失败')
+    }
   }
 }
 

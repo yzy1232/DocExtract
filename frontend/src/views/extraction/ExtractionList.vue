@@ -179,6 +179,7 @@ const selectedRows = ref([])
 const smoothProgressMap = ref({})
 let timer = null
 let smoothTimer = null
+let loadRequestSeq = 0
 
 const query = reactive({ status: '', page: 1, page_size: 10 })
 
@@ -298,16 +299,22 @@ function startSmoothTicker() {
 }
 
 async function loadTasks() {
+  const requestSeq = ++loadRequestSeq
   loading.value = true
   try {
     const res = await extractionApi.list(query)
+    if (requestSeq !== loadRequestSeq) return
     tasks.value = res.data.items
     syncProgressTargets()
     total.value = res.data.pagination.total
   } catch {
-    ElMessage.error('加载任务列表失败')
+    if (requestSeq === loadRequestSeq) {
+      ElMessage.error('加载任务列表失败')
+    }
   } finally {
-    loading.value = false
+    if (requestSeq === loadRequestSeq) {
+      loading.value = false
+    }
   }
 }
 
