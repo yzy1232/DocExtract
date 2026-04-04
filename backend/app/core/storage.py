@@ -161,6 +161,28 @@ class StorageManager:
         except S3Error:
             return {}
 
+    def list_objects(
+        self,
+        bucket: str,
+        prefix: str = "",
+        recursive: bool = True,
+        max_items: int = 5000,
+    ) -> list[dict]:
+        """列举对象，返回轻量元数据列表。"""
+        items: list[dict] = []
+        for obj in self._client.list_objects(bucket, prefix=prefix, recursive=recursive):
+            items.append(
+                {
+                    "object_name": obj.object_name,
+                    "size": obj.size,
+                    "etag": obj.etag,
+                    "last_modified": obj.last_modified,
+                }
+            )
+            if max_items > 0 and len(items) >= max_items:
+                break
+        return items
+
     @staticmethod
     def calculate_sha256(data: bytes) -> str:
         """计算文件 SHA256 哈希"""

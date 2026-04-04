@@ -215,6 +215,13 @@ export const extractionApi = {
 export const systemApi = {
   health: () => request.get('/system/health'),
   stats: () => request.get('/system/stats'),
+  disasterCheck: () => request.get('/system/disaster-check'),
+  disasterRepair: (data) => request.post('/system/disaster-repair', data, { timeout: 180000 }),
+  publicDisasterCheck: () => request.get('/system/public-disaster-check'),
+  publicDisasterRepair: (data) =>
+    request.post('/system/public-disaster-repair', data, {
+      timeout: 180000,
+    }),
   listLLMOptions: () => request.get('/system/llm-options'),
 
   // LLM 配置 CRUD

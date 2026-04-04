@@ -68,6 +68,19 @@ async def lifespan(app: FastAPI):
         logger.warning(f"启动初始化失败（可忽略，如使用 Alembic）: {e}")
 
     try:
+        from app.core.disaster_recovery import run_startup_disaster_detection
+
+        startup_report = await run_startup_disaster_detection()
+        if startup_report.get("has_critical"):
+            logger.error("启动期灾备检测发现严重风险，请尽快执行应急修复")
+        elif startup_report.get("startup_actions"):
+            logger.warning(f"启动期已执行自动修复动作: {startup_report.get('startup_actions')}")
+        else:
+            logger.info("启动期灾备检测通过")
+    except Exception as e:
+        logger.warning(f"启动期灾备检测失败: {e}")
+
+    try:
         redis = await get_redis()
         await redis.ping()
         logger.info("Redis 连接成功")

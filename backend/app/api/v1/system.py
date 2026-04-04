@@ -16,11 +16,46 @@ from app.models.system import LLMConfig, SystemConfig
 from app.schemas.user import AdminUserCreate, AdminUserUpdate
 from app.core.security import hash_password
 from app.llm.factory import get_default_llm_config, create_adapter_from_db_config, get_default_adapter
+from app.core.disaster_recovery import detect_disaster_state, run_emergency_repair
+from app.config import settings
 from sqlalchemy import update as sqlalchemy_update
 
 router = APIRouter(prefix="/system", tags=["系统管理"])
 
 logger = logging.getLogger("app.api.v1.system")
+
+
+def _ensure_emergency_public_api_enabled() -> None:
+    from app.core.exceptions import ForbiddenException
+
+    if not settings.EMERGENCY_PUBLIC_API_ENABLED:
+        raise ForbiddenException("应急公共接口已禁用")
+
+
+async def _execute_disaster_repair(payload: dict) -> dict:
+    from app.core.exceptions import ValidationException
+
+    dry_run = bool(payload.get("dry_run", False))
+    expected_confirm = str(settings.EMERGENCY_REPAIR_CONFIRM_TOKEN or "REBUILD").strip()
+    provided_confirm = str(payload.get("confirm") or "").strip()
+
+    if not dry_run and provided_confirm != expected_confirm:
+        raise ValidationException(f"高危操作确认失败，请输入确认口令: {expected_confirm}")
+
+    try:
+        scan_limit = int(payload.get("scan_limit", settings.DISASTER_RECOVERY_SCAN_LIMIT))
+    except (TypeError, ValueError):
+        raise ValidationException("scan_limit 必须是整数")
+
+    return await run_emergency_repair(
+        rebuild_database=bool(payload.get("rebuild_database", True)),
+        rebuild_redis=bool(payload.get("rebuild_redis", True)),
+        recover_documents=bool(payload.get("recover_documents", True)),
+        promote_redis_to_master=bool(payload.get("promote_redis_to_master", True)),
+        restart_runtime=bool(payload.get("restart_runtime", True)),
+        dry_run=dry_run,
+        scan_limit=scan_limit,
+    )
 
 
 def _serialize_user(user: User) -> dict:
@@ -62,7 +97,76 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         status["cache"] = "ok"
     except Exception:
         status["cache"] = "error"
+
+    try:
+        report = await detect_disaster_state(db=db, detailed=False)
+        status["disaster"] = {
+            "severity": report.get("severity", "unknown"),
+            "has_critical": bool(report.get("has_critical")),
+            "risk_count": len(report.get("risk_items") or []),
+        }
+    except Exception:
+        status["disaster"] = {
+            "severity": "unknown",
+            "has_critical": False,
+            "risk_count": 0,
+        }
+
     return ResponseBase(data=status)
+
+
+@router.get("/disaster-check", response_model=ResponseBase[dict], summary="极端情况检测")
+async def disaster_check(
+    _current_user: User = Depends(get_current_superuser),
+):
+    """检测数据库/Redis 异常与弱配置风险。"""
+    report = await detect_disaster_state(detailed=True)
+    return ResponseBase(data=report)
+
+
+@router.post("/disaster-repair", response_model=ResponseBase[dict], summary="极端情况修复与重载")
+async def disaster_repair(
+    payload: dict = Body(...),
+    _current_user: User = Depends(get_current_superuser),
+):
+    """执行高危修复：可选重建数据库、重建 Redis、恢复部分文档、运行时重载。"""
+    report = await _execute_disaster_repair(payload)
+    return ResponseBase(data=report)
+
+
+@router.get(
+    "/public-disaster-check",
+    response_model=ResponseBase[dict],
+    summary="公共极端情况检测",
+    include_in_schema=False,
+)
+async def public_disaster_check(
+):
+    """登录失败场景使用：无需登录。"""
+    _ensure_emergency_public_api_enabled()
+    report = await detect_disaster_state(detailed=True)
+    return ResponseBase(data=report)
+
+
+@router.post(
+    "/public-disaster-repair",
+    response_model=ResponseBase[dict],
+    summary="公共极端情况修复",
+    include_in_schema=False,
+)
+async def public_disaster_repair(
+    payload: dict = Body(...),
+):
+    """登录失败场景使用：仅在检测到严重异常时允许执行。"""
+    from app.core.exceptions import ForbiddenException
+
+    _ensure_emergency_public_api_enabled()
+    state = await detect_disaster_state(detailed=False)
+    if not state.get("has_critical"):
+        raise ForbiddenException("当前服务未处于异常状态，禁止执行公共应急修复")
+
+    report = await _execute_disaster_repair(payload)
+    return ResponseBase(data=report)
 
 
 @router.get("/stats", response_model=ResponseBase[dict], summary="系统统计")

@@ -179,6 +179,17 @@ class Settings(BaseSettings):
     DEFAULT_ADMIN_PASSWORD: str = "admin123"
     DEFAULT_ADMIN_EMAIL: str = "admin@example.com"
 
+    # ========================
+    # 灾备与应急修复
+    # ========================
+    AUTO_DISASTER_DETECT: bool = True
+    AUTO_FIX_REDIS_REPLICA: bool = True
+    AUTO_REBUILD_ON_TABLE_LOSS: bool = False
+    DISASTER_RECOVERY_SCAN_LIMIT: int = 5000
+    EMERGENCY_REPAIR_CONFIRM_TOKEN: str = "REBUILD"
+    EMERGENCY_PUBLIC_API_ENABLED: bool = True
+    EMERGENCY_ACCESS_TOKEN: Optional[str] = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
