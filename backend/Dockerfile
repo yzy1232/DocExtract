@@ -3,6 +3,10 @@ FROM python:3.11-slim
 # 支持构建时传入 apt 镜像域名，默认使用清华源
 ARG APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
 
+# 支持构建时传入 pip 镜像，默认使用清华源并回退官方源
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_EXTRA_INDEX_URL=https://pypi.org/simple
+
 # 避免 tzdata 安装交互提示，并设置默认时区为上海（可按需修改）
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
@@ -32,7 +36,11 @@ WORKDIR /app
 
 # 依赖安装（分层缓存，使用国内镜像加速）
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir \
+    -i ${PIP_INDEX_URL} \
+    --extra-index-url ${PIP_EXTRA_INDEX_URL} \
+    -r requirements.txt
 
 # 复制应用代码
 COPY . .
