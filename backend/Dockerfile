@@ -1,11 +1,20 @@
 FROM python:3.11-slim
 
+# 支持构建时传入 apt 镜像域名，默认使用清华源
+ARG APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
+
 # 避免 tzdata 安装交互提示，并设置默认时区为上海（可按需修改）
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
 # 系统依赖（PyMuPDF 需要）。包含 tzdata 以提供 /usr/share/zoneinfo
-RUN apt-get update && apt-get install -y \
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+            sed -i "s|http://deb.debian.org|https://${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+        fi \
+        && if [ -f /etc/apt/sources.list ]; then \
+            sed -i "s|http://deb.debian.org/debian|https://${APT_MIRROR}/debian|g; s|http://deb.debian.org/debian-security|https://${APT_MIRROR}/debian-security|g; s|http://security.debian.org/debian-security|https://${APT_MIRROR}/debian-security|g" /etc/apt/sources.list; \
+        fi \
+        && apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     libmupdf-dev \
     mupdf-tools \
