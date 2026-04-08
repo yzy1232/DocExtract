@@ -4,6 +4,12 @@ export const templateApi = {
   // 创建模板
   create: (data) => request.post('/templates', data),
 
+  // 上传模板文件（Excel/CSV）
+  importFile: (formData) =>
+    request.post('/templates/import', formData, {
+      timeout: 120000,
+    }),
+
   // 更新模板
   update: (id, data) => request.put(`/templates/${id}`, data),
 
@@ -12,6 +18,14 @@ export const templateApi = {
 
   // 获取模板详情
   get: (id) => request.get(`/templates/${id}`),
+
+  // 下载模板文件（Excel/CSV）
+  download: (id, format = 'xlsx') =>
+    request.get(`/templates/${id}/download`, {
+      params: { format },
+      responseType: 'blob',
+      timeout: 120000,
+    }),
 
   // 删除模板
   delete: (id) => request.delete(`/templates/${id}`),

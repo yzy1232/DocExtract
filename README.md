@@ -178,7 +178,9 @@ Project1/
 |------|------|------|
 | GET  | `/api/v1/templates` | 列表（分页/搜索） |
 | POST | `/api/v1/templates` | 创建模板 |
+| POST | `/api/v1/templates/import` | 上传模板文件（Excel/CSV） |
 | GET  | `/api/v1/templates/{id}` | 模板详情 |
+| GET  | `/api/v1/templates/{id}/download` | 下载模板文件（Excel/CSV） |
 | PUT  | `/api/v1/templates/{id}` | 更新模板（自动版本化） |
 | DELETE | `/api/v1/templates/{id}` | 归档模板 |
 | POST | `/api/v1/templates/{id}/fields` | 添加字段 |

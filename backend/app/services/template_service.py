@@ -5,8 +5,11 @@ import asyncio
 import uuid
 import json
 import ast
+import csv
+import io
 import re
 import logging
+from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any, Callable, Awaitable
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, delete
@@ -32,6 +35,30 @@ TEMPLATE_INFER_CHUNK_MAX_FIELDS = 8
 TEMPLATE_INFER_VERIFY_TEXT_LIMIT = 12000
 TEMPLATE_INFER_CHUNK_CONCURRENCY = 3
 logger = logging.getLogger(__name__)
+
+
+TEMPLATE_TABULAR_HEADERS: List[Tuple[str, str]] = [
+    ("字段标识", "field_name"),
+    ("显示名称", "field_display_name"),
+    ("字段类型", "field_type"),
+    ("是否必填", "field_required"),
+    ("字段描述", "field_description"),
+    ("提取提示", "field_extraction_hints"),
+    ("排序", "field_sort_order"),
+]
+
+TEMPLATE_TABULAR_ALIAS: Dict[str, List[str]] = {
+    "template_name": ["template_name", "template", "模板名称", "模板名"],
+    "template_description": ["template_description", "模板描述", "描述"],
+    "template_status": ["template_status", "status", "模板状态"],
+    "field_name": ["field_name", "name", "字段标识", "字段名", "标识"],
+    "field_display_name": ["field_display_name", "display_name", "显示名称", "字段显示名", "名称"],
+    "field_type": ["field_type", "type", "字段类型", "类型"],
+    "field_required": ["field_required", "required", "是否必填", "必填"],
+    "field_description": ["field_description", "description", "字段描述", "字段说明"],
+    "field_extraction_hints": ["field_extraction_hints", "extraction_hints", "提取提示", "提取说明"],
+    "field_sort_order": ["field_sort_order", "sort_order", "排序", "顺序"],
+}
 
 
 class TemplateService:
@@ -289,6 +316,344 @@ class TemplateService:
             select(TemplateCategory).order_by(TemplateCategory.sort_order)
         )
         return result.scalars().all()
+
+    async def import_template_from_file(
+        self,
+        file_content: bytes,
+        filename: str,
+        creator_id: str,
+        template_name: Optional[str] = None,
+        template_description: Optional[str] = None,
+        template_status: Optional[TemplateStatus] = None,
+        is_public: bool = False,
+    ) -> Template:
+        """从 CSV/XLSX 文件导入模板。"""
+        ext = self._detect_template_file_ext(filename)
+        headers, row_data = self._load_template_tabular_rows(file_content, ext)
+        if not headers and not row_data:
+            raise ValidationException("模板文件内容为空")
+
+        normalized_rows = [self._normalize_template_import_row(row) for row in row_data] if row_data else []
+        structured_mode = any(
+            self._to_text(row.get("field_name")) or self._to_text(row.get("field_display_name"))
+            for row in normalized_rows
+        )
+
+        resolved_name = (template_name or "").strip()
+        if not resolved_name:
+            if structured_mode:
+                resolved_name = self._first_non_empty(normalized_rows, "template_name")
+            if not resolved_name:
+                resolved_name = self._derive_template_name_from_filename(filename)
+        if not resolved_name:
+            resolved_name = f"导入模板_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        resolved_desc = (template_description or "").strip() or (
+            self._first_non_empty(normalized_rows, "template_description") if structured_mode else ""
+        )
+        resolved_status = template_status or (
+            self._parse_template_status(self._first_non_empty(normalized_rows, "template_status"))
+            if structured_mode
+            else TemplateStatus.DRAFT
+        )
+
+        if structured_mode:
+            fields = self._build_fields_from_structured_rows(normalized_rows)
+        else:
+            fields = self._build_fields_from_simple_headers(headers, row_data)
+
+        if not fields:
+            raise ValidationException("未识别到可导入字段，请检查文件表头")
+
+        template_data = TemplateCreate(
+            name=resolved_name[:128],
+            description=resolved_desc or None,
+            status=resolved_status,
+            is_public=is_public,
+            fields=fields,
+        )
+        return await self.create(template_data, creator_id)
+
+    def export_template_file(self, template: Template, export_format: str) -> Tuple[bytes, str, str]:
+        """导出模板为 CSV/XLSX 文件（仅字段表头）。"""
+        fmt = (export_format or "xlsx").strip().lower()
+        if fmt not in {"xlsx", "csv"}:
+            raise ValidationException("仅支持导出 xlsx 或 csv 格式")
+
+        export_headers = self._build_template_export_headers(template)
+        filename = f"template_{template.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{fmt}"
+
+        if fmt == "csv":
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            if export_headers:
+                writer.writerow(export_headers)
+            content = buf.getvalue().encode("utf-8-sig")
+            return content, "text/csv", filename
+
+        try:
+            import openpyxl
+        except ImportError as e:
+            raise ValidationException(f"未安装 openpyxl，无法导出 xlsx: {e}")
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "字段模板"
+        if export_headers:
+            ws.append(export_headers)
+
+        output = io.BytesIO()
+        wb.save(output)
+        return output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename
+
+    def _detect_template_file_ext(self, filename: str) -> str:
+        ext = (filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
+        if ext not in {"xlsx", "csv"}:
+            raise ValidationException("模板文件仅支持 .xlsx 或 .csv")
+        return ext
+
+    def _load_template_tabular_rows(self, file_content: bytes, ext: str) -> Tuple[List[str], List[Dict[str, Any]]]:
+        if ext == "csv":
+            text = self._decode_csv_text(file_content)
+            reader = csv.DictReader(io.StringIO(text))
+            if not reader.fieldnames:
+                raise ValidationException("CSV 文件缺少表头")
+            headers = [self._to_text(h) for h in reader.fieldnames if self._to_text(h)]
+            rows: List[Dict[str, Any]] = []
+            for row in reader:
+                if not isinstance(row, dict):
+                    continue
+                if any(self._to_text(v) for v in row.values()):
+                    rows.append(row)
+            return headers, rows
+
+        try:
+            import openpyxl
+        except ImportError as e:
+            raise ValidationException(f"未安装 openpyxl，无法读取 xlsx: {e}")
+
+        wb = openpyxl.load_workbook(io.BytesIO(file_content), data_only=True)
+        ws = wb.active
+        raw_rows = list(ws.iter_rows(values_only=True))
+        if not raw_rows:
+            return [], []
+
+        headers = [self._to_text(cell) for cell in raw_rows[0]]
+        if not any(headers):
+            raise ValidationException("Excel 文件缺少表头")
+
+        rows = []
+        for values in raw_rows[1:]:
+            row = {}
+            for idx, header in enumerate(headers):
+                if not header:
+                    continue
+                row[header] = values[idx] if idx < len(values) else None
+            if any(self._to_text(v) for v in row.values()):
+                rows.append(row)
+        return [h for h in headers if h], rows
+
+    def _derive_template_name_from_filename(self, filename: str) -> str:
+        base = (filename or "").strip()
+        if "." in base:
+            base = base.rsplit(".", 1)[0]
+        return base.strip()[:128]
+
+    def _build_fields_from_structured_rows(self, normalized_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        fields: List[Dict[str, Any]] = []
+        used_names: set[str] = set()
+
+        for idx, row in enumerate(normalized_rows):
+            raw_field_name = self._to_text(row.get("field_name"))
+            raw_display_name = self._to_text(row.get("field_display_name"))
+            if not raw_field_name and not raw_display_name:
+                continue
+
+            preferred_name = raw_field_name or raw_display_name
+            field_name = self._deduplicate_name(self._normalize_field_name(preferred_name, idx + 1), used_names)
+            used_names.add(field_name)
+            display_name = (raw_display_name or raw_field_name or f"字段{idx + 1}")[:128]
+
+            field_type = self._normalize_field_type(row.get("field_type"))
+            required = self._parse_bool(row.get("field_required"))
+            description = self._to_text(row.get("field_description")) or None
+            extraction_hints = self._to_text(row.get("field_extraction_hints")) or None
+            sort_order = self._parse_int(row.get("field_sort_order"), len(fields))
+
+            fields.append(
+                {
+                    "name": field_name,
+                    "display_name": display_name,
+                    "field_type": field_type,
+                    "description": description,
+                    "required": required,
+                    "extraction_hints": extraction_hints,
+                    "sort_order": sort_order,
+                }
+            )
+
+        return fields
+
+    def _build_fields_from_simple_headers(
+        self,
+        headers: List[str],
+        row_data: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        alias_keys = {
+            self._normalize_header(alias)
+            for aliases in TEMPLATE_TABULAR_ALIAS.values()
+            for alias in aliases
+        }
+
+        display_headers: List[str] = []
+        seen: set[str] = set()
+        for header in headers or []:
+            display_name = self._to_text(header)
+            if not display_name:
+                continue
+            normalized = self._normalize_header(display_name)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            if normalized in alias_keys:
+                continue
+            display_headers.append(display_name)
+
+        if not display_headers and headers:
+            # 若全部命中别名（极端情况），回退使用原始非空表头。
+            display_headers = [self._to_text(h) for h in headers if self._to_text(h)]
+
+        fields: List[Dict[str, Any]] = []
+        used_names: set[str] = set()
+        for idx, display_name in enumerate(display_headers):
+            sample_values = []
+            for row in row_data or []:
+                value = row.get(display_name)
+                if self._to_text(value):
+                    sample_values.append(value)
+
+            field_name = self._deduplicate_name(
+                self._normalize_field_name(display_name, idx + 1),
+                used_names,
+            )
+            used_names.add(field_name)
+
+            fields.append(
+                {
+                    "name": field_name,
+                    "display_name": display_name[:128],
+                    "field_type": self._infer_field_type_from_header_and_samples(display_name, sample_values),
+                    "description": f"从表头提取{display_name}",
+                    "required": False,
+                    "extraction_hints": None,
+                    "sort_order": idx,
+                }
+            )
+
+        return fields
+
+    def _decode_csv_text(self, file_content: bytes) -> str:
+        for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
+            try:
+                return file_content.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+
+        try:
+            import chardet
+            detect_result = chardet.detect(file_content)
+            guessed = detect_result.get("encoding")
+            if guessed:
+                return file_content.decode(guessed, errors="ignore")
+        except Exception:
+            pass
+
+        raise ValidationException("CSV 编码无法识别，请使用 UTF-8 或 GBK 编码")
+
+    def _normalize_template_import_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        alias_map: Dict[str, str] = {}
+        for canonical, aliases in TEMPLATE_TABULAR_ALIAS.items():
+            for alias in aliases:
+                alias_map[self._normalize_header(alias)] = canonical
+
+        normalized: Dict[str, Any] = {}
+        for key, value in (row or {}).items():
+            canonical = alias_map.get(self._normalize_header(key))
+            if not canonical:
+                continue
+            if canonical not in normalized or not self._to_text(normalized.get(canonical)):
+                normalized[canonical] = value
+
+        return normalized
+
+    def _normalize_header(self, value: Any) -> str:
+        text = self._to_text(value).lower()
+        return re.sub(r"[\s_\-]", "", text)
+
+    def _to_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value).strip()
+
+    def _first_non_empty(self, rows: List[Dict[str, Any]], key: str) -> str:
+        for row in rows:
+            value = self._to_text(row.get(key))
+            if value:
+                return value
+        return ""
+
+    def _parse_bool(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        text = self._to_text(value).lower()
+        if text in {"1", "true", "yes", "y", "是", "必填", "需要"}:
+            return True
+        if text in {"0", "false", "no", "n", "否", "非必填", "不需要", ""}:
+            return False
+        return False
+
+    def _parse_int(self, value: Any, default: int = 0) -> int:
+        text = self._to_text(value)
+        if not text:
+            return default
+        try:
+            return int(float(text))
+        except ValueError:
+            return default
+
+    def _parse_template_status(self, value: Any) -> TemplateStatus:
+        text = self._to_text(value).lower()
+        mapping = {
+            "draft": TemplateStatus.DRAFT,
+            "草稿": TemplateStatus.DRAFT,
+            "active": TemplateStatus.ACTIVE,
+            "发布": TemplateStatus.ACTIVE,
+            "已发布": TemplateStatus.ACTIVE,
+            "deprecated": TemplateStatus.DEPRECATED,
+            "废弃": TemplateStatus.DEPRECATED,
+            "已废弃": TemplateStatus.DEPRECATED,
+            "archived": TemplateStatus.ARCHIVED,
+            "归档": TemplateStatus.ARCHIVED,
+            "已归档": TemplateStatus.ARCHIVED,
+        }
+        return mapping.get(text, TemplateStatus.DRAFT)
+
+    def _build_template_export_headers(self, template: Template) -> List[str]:
+        fields = sorted(
+            list(template.fields or []),
+            key=lambda f: (f.sort_order if f.sort_order is not None else 0),
+        )
+        return [
+            self._to_text(getattr(field, "display_name", None))
+            or self._to_text(getattr(field, "name", None))
+            for field in fields
+            if self._to_text(getattr(field, "display_name", None))
+            or self._to_text(getattr(field, "name", None))
+        ]
 
     async def infer_template_from_document(
         self,

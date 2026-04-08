@@ -7,9 +7,19 @@
         <p class="page-subtitle">维护抽取模板、字段结构和发布状态，保证不同文档场景下的输出一致性。</p>
       </div>
       <div class="page-actions">
+        <el-button :icon="Upload" :loading="importing" @click="triggerImport">
+          上传模板
+        </el-button>
         <el-button type="primary" :icon="Plus" @click="router.push('/templates/create')">
           新建模板
         </el-button>
+        <input
+          ref="importInputRef"
+          class="hidden-file-input"
+          type="file"
+          accept=".xlsx,.csv"
+          @change="handleImportFileChange"
+        />
       </div>
     </section>
 
@@ -74,7 +84,7 @@
         <el-table-column prop="created_at" label="创建时间" width="170">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="180" align="center">
+        <el-table-column label="操作" width="260" align="center">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="router.push(`/templates/${row.id}`)">
               详情
@@ -82,6 +92,17 @@
             <el-button size="small" text type="primary" @click="router.push(`/templates/${row.id}/edit`)">
               编辑
             </el-button>
+            <el-dropdown @command="(cmd) => handleDownloadCommand(row, cmd)">
+              <el-button size="small" text type="primary">
+                下载
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="xlsx">下载Excel</el-dropdown-item>
+                  <el-dropdown-item command="csv">下载CSV</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <el-button
               size="small"
               text
@@ -117,12 +138,14 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search } from '@element-plus/icons-vue'
+import { Plus, Search, Upload } from '@element-plus/icons-vue'
 import { templateApi } from '@/api/index'
 import { formatDateToUTC8 } from '@/utils/datetime'
 
 const router = useRouter()
 const loading = ref(false)
+const importing = ref(false)
+const importInputRef = ref(null)
 const templates = ref([])
 const total = ref(0)
 const selectedRows = ref([])
@@ -135,6 +158,38 @@ const selectedIds = computed(() => selectedRows.value.map(item => item.id))
 
 function formatDate(str) {
   return formatDateToUTC8(str)
+}
+
+function triggerImport() {
+  if (importing.value) return
+  importInputRef.value?.click()
+}
+
+async function handleImportFileChange(event) {
+  const file = event?.target?.files?.[0]
+  if (!file) return
+
+  const lowerName = String(file.name || '').toLowerCase()
+  if (!lowerName.endsWith('.xlsx') && !lowerName.endsWith('.csv')) {
+    ElMessage.warning('仅支持上传 .xlsx 或 .csv 模板文件')
+    event.target.value = ''
+    return
+  }
+
+  importing.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await templateApi.importFile(formData)
+    ElMessage.success(`模板上传成功：${res.data?.name || file.name}`)
+    query.page = 1
+    await loadTemplates()
+  } catch {
+    ElMessage.error('模板上传失败')
+  } finally {
+    importing.value = false
+    event.target.value = ''
+  }
 }
 
 async function loadTemplates() {
@@ -177,6 +232,57 @@ async function handleDelete(row) {
   }
 }
 
+function resolveDownloadFilename(headers, fallbackName) {
+  const contentDisposition = headers?.['content-disposition'] || ''
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1])
+    } catch {
+      // ignore decode error and continue fallback
+    }
+  }
+
+  const plainMatch = contentDisposition.match(/filename="?([^";]+)"?/i)
+  if (plainMatch?.[1]) {
+    return plainMatch[1]
+  }
+  return fallbackName
+}
+
+async function downloadTemplateFile(row, format = 'xlsx') {
+  try {
+    const res = await templateApi.download(row.id, format)
+    const contentType = res.headers?.['content-type'] || (format === 'csv'
+      ? 'text/csv'
+      : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    const blob = res.data instanceof Blob ? res.data : new Blob([res.data], { type: contentType })
+    if (!blob || blob.size === 0) {
+      ElMessage.error('下载失败：文件为空')
+      return
+    }
+
+    const fallbackName = `${row.name || 'template'}.${format}`
+    const filename = resolveDownloadFilename(res.headers, fallbackName)
+
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.URL.revokeObjectURL(url)
+  } catch {
+    ElMessage.error('下载模板失败')
+  }
+}
+
+function handleDownloadCommand(row, command) {
+  const format = command === 'csv' ? 'csv' : 'xlsx'
+  downloadTemplateFile(row, format)
+}
+
 async function handleBatchDelete() {
   if (selectedIds.value.length === 0) return
   await ElMessageBox.confirm(`确认删除选中的 ${selectedIds.value.length} 个模板？`, '批量删除确认', { type: 'warning' })
@@ -199,6 +305,10 @@ onMounted(loadTemplates)
 <style scoped>
 .search-card {
   margin-bottom: 16px;
+}
+
+.hidden-file-input {
+  display: none;
 }
 
 .pagination-wrap {

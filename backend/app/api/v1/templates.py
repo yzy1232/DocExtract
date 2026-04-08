@@ -4,8 +4,10 @@
 import asyncio
 import json
 import logging
+import io
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from urllib.parse import quote
+from fastapi import APIRouter, Depends, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -17,6 +19,7 @@ from app.schemas.template import (
 from app.schemas.common import ResponseBase, PaginatedResponse, PageInfo
 from app.services.template_service import TemplateService
 from app.core.auth import get_current_user
+from app.core.exceptions import ValidationException
 from app.models.user import User
 from app.models.template import TemplateStatus
 
@@ -151,6 +154,36 @@ async def infer_template_from_document_stream(
     )
 
 
+@router.post("/import", response_model=ResponseBase[TemplateOut], summary="上传模板文件（Excel/CSV）")
+async def import_template_file(
+    file: UploadFile = File(..., description="模板文件，支持 .xlsx/.csv"),
+    template_name: Optional[str] = Form(default=None, description="模板名称（可选，优先级高于文件内容）"),
+    template_description: Optional[str] = Form(default=None, description="模板描述（可选，优先级高于文件内容）"),
+    template_status: Optional[TemplateStatus] = Form(default=None, description="模板状态（可选）"),
+    is_public: bool = Form(default=False, description="是否公开模板"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not file.filename:
+        raise ValidationException("文件名不能为空")
+
+    file_content = await file.read()
+    if not file_content:
+        raise ValidationException("上传文件为空")
+
+    svc = TemplateService(db)
+    template = await svc.import_template_from_file(
+        file_content=file_content,
+        filename=file.filename,
+        creator_id=current_user.id,
+        template_name=template_name,
+        template_description=template_description,
+        template_status=template_status,
+        is_public=is_public,
+    )
+    return ResponseBase(data=TemplateOut.model_validate(template))
+
+
 @router.get("", response_model=ResponseBase[PaginatedResponse[TemplateListOut]], summary="查询模板列表")
 async def list_templates(
     page: int = Query(default=1, ge=1),
@@ -181,6 +214,34 @@ async def list_templates(
             total_pages=(total + page_size - 1) // page_size,
         ),
     ))
+
+
+@router.get("/{template_id}/download", summary="下载模板文件")
+async def download_template_file(
+    template_id: str,
+    format: str = Query(default="xlsx", pattern="^(xlsx|csv)$"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    svc = TemplateService(db)
+    template = await svc.get_by_id(template_id)
+    content, content_type, filename = svc.export_template_file(template, format)
+
+    def _ascii_fallback(name: str) -> str:
+        try:
+            name.encode("ascii")
+            return name
+        except UnicodeEncodeError:
+            return "".join(c if ord(c) < 128 else "_" for c in name)
+
+    ascii_name = _ascii_fallback(filename)
+    quoted = quote(filename)
+    content_disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=content_type,
+        headers={"Content-Disposition": content_disposition},
+    )
 
 
 @router.get("/{template_id}", response_model=ResponseBase[TemplateOut], summary="获取模板详情")
