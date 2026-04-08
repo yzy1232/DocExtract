@@ -24,8 +24,8 @@
     </section>
 
     <el-card shadow="never" class="search-card">
-      <el-row :gutter="16" align="middle">
-        <el-col :span="8">
+      <div class="ops-toolbar">
+        <div class="ops-toolbar__filters">
           <el-input
             v-model="query.keyword"
             placeholder="搜索模板名称/描述"
@@ -33,19 +33,17 @@
             clearable
             @keyup.enter="loadTemplates"
           />
-        </el-col>
-        <el-col :span="5">
-          <el-select v-model="query.status" placeholder="状态筛选" clearable style="width:100%">
+          <el-select v-model="query.status" placeholder="状态筛选" clearable>
             <el-option label="草稿" value="draft" />
             <el-option label="已发布" value="active" />
             <el-option label="已废弃" value="deprecated" />
           </el-select>
-        </el-col>
-        <el-col :span="4">
+        </div>
+        <div class="ops-toolbar__actions">
           <el-button type="primary" :icon="Search" @click="loadTemplates">搜索</el-button>
           <el-button @click="resetQuery">重置</el-button>
-        </el-col>
-        <el-col :span="7" style="text-align:right">
+        </div>
+        <div class="ops-toolbar__batch">
           <el-button
             type="danger"
             plain
@@ -54,8 +52,8 @@
           >
             批量删除（{{ selectedIds.length }}）
           </el-button>
-        </el-col>
-      </el-row>
+        </div>
+      </div>
     </el-card>
 
     <el-card shadow="never">
@@ -84,36 +82,38 @@
         <el-table-column prop="created_at" label="创建时间" width="170">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="260" align="center">
+        <el-table-column label="操作" width="320" align="center">
           <template #default="{ row }">
-            <el-button size="small" text type="primary" @click="router.push(`/templates/${row.id}`)">
-              详情
-            </el-button>
-            <el-button size="small" text type="primary" @click="router.push(`/templates/${row.id}/edit`)">
-              编辑
-            </el-button>
-            <el-dropdown @command="(cmd) => handleDownloadCommand(row, cmd)">
-              <el-button size="small" text type="primary">
-                下载
+            <div class="table-actions">
+              <el-button size="small" text type="primary" @click="router.push(`/templates/${row.id}`)">
+                详情
               </el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="xlsx">下载Excel</el-dropdown-item>
-                  <el-dropdown-item command="csv">下载CSV</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-            <el-button
-              size="small"
-              text
-              type="primary"
-              @click="router.push({ path: '/extractions/create', query: { template_id: row.id } })"
-            >
-              新建提取
-            </el-button>
-            <el-button size="small" text type="danger" @click="handleDelete(row)">
-              删除
-            </el-button>
+              <el-button size="small" text type="primary" @click="router.push(`/templates/${row.id}/edit`)">
+                编辑
+              </el-button>
+              <el-dropdown @command="(cmd) => handleDownloadCommand(row, cmd)">
+                <el-button size="small" text type="primary">
+                  下载
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="xlsx">下载Excel</el-dropdown-item>
+                    <el-dropdown-item command="csv">下载CSV</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <el-button
+                size="small"
+                text
+                type="primary"
+                @click="router.push({ path: '/extractions/create', query: { template_id: row.id } })"
+              >
+                新建提取
+              </el-button>
+              <el-button size="small" text type="danger" @click="handleDelete(row)">
+                删除
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>

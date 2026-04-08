@@ -14,8 +14,8 @@
     </section>
 
     <el-card shadow="never" class="search-card">
-      <el-row :gutter="16" align="middle">
-        <el-col :span="8">
+      <div class="ops-toolbar">
+        <div class="ops-toolbar__filters">
           <el-input
             v-model="query.keyword"
             placeholder="搜索文档名称"
@@ -23,20 +23,18 @@
             clearable
             @keyup.enter="loadDocuments"
           />
-        </el-col>
-        <el-col :span="5">
-          <el-select v-model="query.status" placeholder="处理状态" clearable style="width:100%">
+          <el-select v-model="query.status" placeholder="处理状态" clearable>
             <el-option label="已上传" value="uploaded" />
             <el-option label="处理中" value="processing" />
             <el-option label="已完成" value="processed" />
             <el-option label="解析失败" value="failed" />
           </el-select>
-        </el-col>
-        <el-col :span="4">
+        </div>
+        <div class="ops-toolbar__actions">
           <el-button type="primary" :icon="Search" @click="loadDocuments">搜索</el-button>
           <el-button @click="resetQuery">重置</el-button>
-        </el-col>
-        <el-col :span="7" style="text-align:right">
+        </div>
+        <div class="ops-toolbar__batch">
           <el-button
             type="danger"
             plain
@@ -45,8 +43,8 @@
           >
             批量删除（{{ selectedIds.length }}）
           </el-button>
-        </el-col>
-      </el-row>
+        </div>
+      </div>
     </el-card>
 
     <el-card shadow="never">
@@ -81,31 +79,33 @@
         <el-table-column prop="created_at" label="上传时间" width="170">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="200" align="center">
+        <el-table-column label="操作" width="300" align="center">
           <template #default="{ row }">
-            <el-button
-              size="small"
-              text
-              type="primary"
-              @click="createExtraction(row.id)"
-            >
-              提取
-            </el-button>
-            <el-button
-              size="small"
-              text
-              type="primary"
-              :disabled="row.status !== 'processed'"
-              @click="createTemplateFromDoc(row)"
-            >
-              提取模板
-            </el-button>
-            <el-button size="small" text type="primary" @click="downloadDoc(row)">
-              下载
-            </el-button>
-            <el-button size="small" text type="danger" @click="handleDelete(row)">
-              删除
-            </el-button>
+            <div class="table-actions">
+              <el-button
+                size="small"
+                text
+                type="primary"
+                @click="createExtraction(row.id)"
+              >
+                提取
+              </el-button>
+              <el-button
+                size="small"
+                text
+                type="primary"
+                :disabled="row.status !== 'processed'"
+                @click="createTemplateFromDoc(row)"
+              >
+                提取模板
+              </el-button>
+              <el-button size="small" text type="primary" @click="downloadDoc(row)">
+                下载
+              </el-button>
+              <el-button size="small" text type="danger" @click="handleDelete(row)">
+                删除
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>

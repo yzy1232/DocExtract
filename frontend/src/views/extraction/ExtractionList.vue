@@ -14,21 +14,22 @@
     </section>
 
     <el-card shadow="never" class="search-card">
-      <el-row :gutter="16" align="middle">
-        <el-col :span="5">
-          <el-select v-model="query.status" placeholder="任务状态" clearable style="width:100%">
+      <div class="ops-toolbar">
+        <div class="ops-toolbar__filters compact">
+          <el-select v-model="query.status" placeholder="任务状态" clearable>
             <el-option label="待处理" value="pending" />
             <el-option label="运行中" value="running" />
             <el-option label="已完成" value="completed" />
             <el-option label="失败" value="failed" />
             <el-option label="已取消" value="cancelled" />
           </el-select>
-        </el-col>
-        <el-col :span="4">
+        </div>
+        <div class="ops-toolbar__actions">
           <el-button type="primary" :icon="Search" @click="loadTasks">搜索</el-button>
           <el-button @click="resetQuery">重置</el-button>
-        </el-col>
-        <el-col :span="8" style="text-align:right">
+          <el-button :icon="Refresh" @click="loadTasks" :loading="loading">刷新</el-button>
+        </div>
+        <div class="ops-toolbar__batch">
           <el-button
             type="warning"
             plain
@@ -45,11 +46,8 @@
           >
             批量删除任务
           </el-button>
-        </el-col>
-        <el-col :span="7" style="text-align:right">
-          <el-button :icon="Refresh" circle @click="loadTasks" :loading="loading" />
-        </el-col>
-      </el-row>
+        </div>
+      </div>
     </el-card>
 
     <el-card shadow="never">
@@ -94,56 +92,58 @@
         <el-table-column prop="created_at" label="创建时间" width="170">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="240" align="center">
+        <el-table-column label="操作" width="280" align="center">
           <template #default="{ row }">
-            <el-button
-              v-if="row.status === 'completed'"
-              size="small"
-              text
-              type="success"
-              @click="router.push(`/extractions/${row.id}/result`)"
-            >
-              查看结果
-            </el-button>
-            <el-button
-              v-else-if="['pending', 'queued', 'running', 'processing'].includes(row.status)"
-              size="small"
-              text
-              type="warning"
-              @click="router.push(`/extractions/${row.id}`)"
-            >
-              进度
-            </el-button>
-            <el-button
-              v-if="row.status === 'failed'"
-              size="small"
-              text
-              type="danger"
-              @click="router.push(`/extractions/${row.id}`)"
-            >
-              查看错误
-            </el-button>
-            <el-button
-              v-if="row.status === 'failed'"
-              size="small"
-              text
-              type="warning"
-              @click="handleRestart(row)"
-            >
-              重启
-            </el-button>
-            <el-button
-              v-if="deletableStatuses.includes(row.status)"
-              size="small"
-              text
-              type="danger"
-              @click="handleDelete(row)"
-            >
-              删除
-            </el-button>
-            <el-text v-if="!['completed', 'pending', 'queued', 'running', 'processing', 'failed'].includes(row.status)" type="info" size="small">
-              -
-            </el-text>
+            <div class="table-actions">
+              <el-button
+                v-if="row.status === 'completed'"
+                size="small"
+                text
+                type="success"
+                @click="router.push(`/extractions/${row.id}/result`)"
+              >
+                查看结果
+              </el-button>
+              <el-button
+                v-else-if="['pending', 'queued', 'running', 'processing'].includes(row.status)"
+                size="small"
+                text
+                type="warning"
+                @click="router.push(`/extractions/${row.id}`)"
+              >
+                进度
+              </el-button>
+              <el-button
+                v-if="row.status === 'failed'"
+                size="small"
+                text
+                type="danger"
+                @click="router.push(`/extractions/${row.id}`)"
+              >
+                查看错误
+              </el-button>
+              <el-button
+                v-if="row.status === 'failed'"
+                size="small"
+                text
+                type="warning"
+                @click="handleRestart(row)"
+              >
+                重启
+              </el-button>
+              <el-button
+                v-if="deletableStatuses.includes(row.status)"
+                size="small"
+                text
+                type="danger"
+                @click="handleDelete(row)"
+              >
+                删除
+              </el-button>
+              <el-text v-if="!['completed', 'pending', 'queued', 'running', 'processing', 'failed'].includes(row.status)" type="info" size="small">
+                -
+              </el-text>
+            </div>
           </template>
         </el-table-column>
       </el-table>

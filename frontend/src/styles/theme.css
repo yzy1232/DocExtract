@@ -230,6 +230,89 @@ select {
   padding: 18px 20px;
 }
 
+.page-shell .ops-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.page-shell .ops-toolbar__filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 420px;
+  min-width: 260px;
+}
+
+.page-shell .ops-toolbar__filters > * {
+  flex: 1 1 200px;
+  min-width: 170px;
+}
+
+.page-shell .ops-toolbar__filters.compact {
+  flex: 0 1 260px;
+}
+
+.page-shell .ops-toolbar__filters.compact > * {
+  flex: 1 1 auto;
+}
+
+.page-shell .ops-toolbar__actions,
+.page-shell .ops-toolbar__batch,
+.page-shell .ops-toolbar__aux {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.page-shell .ops-toolbar__batch {
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+.page-shell .ops-toolbar .el-button + .el-button {
+  margin-left: 0;
+}
+
+.page-shell .table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 4px 6px;
+  min-height: 24px;
+}
+
+.page-shell .table-actions .el-button,
+.page-shell .table-actions .el-dropdown {
+  width: 76px;
+  margin-left: 0;
+}
+
+.page-shell .table-actions .el-dropdown .el-button {
+  width: 100%;
+}
+
+.page-shell .table-actions .el-button,
+.page-shell .table-actions .el-dropdown .el-button {
+  height: 26px;
+  padding: 0 8px;
+  justify-content: center;
+}
+
+.page-shell .table-actions .el-text {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+}
+
+.page-shell .table-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
 .page-shell .el-input__wrapper,
 .page-shell .el-select__wrapper,
 .page-shell .el-textarea__inner,
@@ -700,6 +783,12 @@ select {
   .page-hero {
     padding: 22px 22px;
   }
+
+  .page-shell .ops-toolbar__batch {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 @media (max-width: 768px) {
@@ -725,6 +814,29 @@ select {
   .page-shell .el-tabs--border-card > .el-tabs__content {
     padding-left: 16px;
     padding-right: 16px;
+  }
+
+  .page-shell .ops-toolbar {
+    align-items: stretch;
+  }
+
+  .page-shell .ops-toolbar__filters,
+  .page-shell .ops-toolbar__actions,
+  .page-shell .ops-toolbar__batch,
+  .page-shell .ops-toolbar__aux {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+  }
+
+  .page-shell .ops-toolbar__filters > * {
+    min-width: 0;
+  }
+
+  .page-shell .ops-toolbar__actions .el-button,
+  .page-shell .ops-toolbar__batch .el-button,
+  .page-shell .ops-toolbar__aux .el-button {
+    flex: 1 1 140px;
   }
 
   .topbar-user .username,
