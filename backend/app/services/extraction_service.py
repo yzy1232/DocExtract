@@ -40,6 +40,10 @@ EXTRACTION_CHUNK_CONCURRENCY = 3
 logger = logging.getLogger(__name__)
 
 
+class TaskCancelledException(Exception):
+    """任务被用户取消时抛出，用于中断执行流程。"""
+
+
 class ExtractionService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -52,6 +56,8 @@ class ExtractionService:
         message: Optional[str] = None,
     ):
         """持久化任务进度，保证轮询可见中间态。"""
+        await self._ensure_task_not_cancelled(task)
+
         clamped_progress = max(0.0, min(100.0, float(progress)))
         current_progress = max(0.0, min(100.0, float(task.progress or 0.0)))
         # 进行中任务只允许进度前进，避免并发心跳/旧响应导致的回退。
@@ -64,6 +70,27 @@ class ExtractionService:
         task.updated_at = datetime.now(timezone.utc)
         await self.db.flush()
         await self.db.commit()
+
+    async def _ensure_task_not_cancelled(self, task: ExtractionTask):
+        """跨事务检查任务是否已被取消，若已取消则中断执行。"""
+        if task.status == TaskStatus.CANCELLED:
+            raise TaskCancelledException("task cancelled by user")
+
+        status_result = await self.db.execute(
+            select(ExtractionTask.status, ExtractionTask.error_message, ExtractionTask.completed_at)
+            .where(ExtractionTask.id == task.id)
+        )
+        row = status_result.first()
+        if not row:
+            raise NotFoundException("提取任务", task.id)
+
+        current_status, current_error, completed_at = row
+        if current_status == TaskStatus.CANCELLED:
+            task.status = TaskStatus.CANCELLED
+            task.completed_at = completed_at or datetime.now(timezone.utc)
+            task.progress_message = "任务已取消"
+            task.error_message = current_error or "task cancelled by user"
+            raise TaskCancelledException(task.error_message)
 
     def _parse_document_in_thread(self, processor, file_content: bytes, filename: str):
         """在线程中执行解析，避免阻塞主事件循环导致进度长时间不刷新。"""
@@ -698,13 +725,15 @@ class ExtractionService:
             self._normalize_task_progress(task)
             return task
 
-        task.status = TaskStatus.PROCESSING
-        task.started_at = datetime.now(timezone.utc)
-        await self._checkpoint_progress(task, 1.0, "任务启动")
-        await self._log(task_id, "info", "extraction_start", "开始执行提取任务")
-
         start_time = time.time()
         try:
+            await self._ensure_task_not_cancelled(task)
+
+            task.status = TaskStatus.PROCESSING
+            task.started_at = datetime.now(timezone.utc)
+            await self._checkpoint_progress(task, 1.0, "任务启动")
+            await self._log(task_id, "info", "extraction_start", "开始执行提取任务")
+
             # 获取文档内容
             doc_result = await self.db.execute(
                 select(Document).where(Document.id == task.document_id)
@@ -878,6 +907,8 @@ class ExtractionService:
             wait_heartbeat_progress = llm_stage_start
             try:
                 while pending_chunk_tasks:
+                    await self._ensure_task_not_cancelled(task)
+
                     done_tasks, pending_chunk_tasks = await asyncio.wait(
                         pending_chunk_tasks,
                         timeout=2.0,
@@ -1079,6 +1110,15 @@ class ExtractionService:
             task.processing_time_ms = int((time.time() - start_time) * 1000)
             await self._log(task_id, "info", "extraction_complete", f"提取完成，置信度: {overall_confidence:.2f}")
 
+        except TaskCancelledException as e:
+            task.status = TaskStatus.CANCELLED
+            task.completed_at = task.completed_at or datetime.now(timezone.utc)
+            task.progress = max(float(task.progress or 0.0), 1.0)
+            task.progress_message = "任务已取消"
+            task.processing_time_ms = int((time.time() - start_time) * 1000)
+            if not task.error_message:
+                task.error_message = str(e) or "task cancelled by user"
+            await self._log(task_id, "warning", "extraction_cancelled", task.error_message)
         except Exception as e:
             task.status = TaskStatus.FAILED
             task.error_message = str(e)
@@ -1429,6 +1469,8 @@ class ExtractionService:
         cancellable_statuses = {
             TaskStatus.PENDING,
             TaskStatus.QUEUED,
+            TaskStatus.PROCESSING,
+            TaskStatus.RETRYING,
         }
         deletable_statuses = {
             TaskStatus.COMPLETED,
@@ -1437,6 +1479,18 @@ class ExtractionService:
         }
 
         if task.status in cancellable_statuses:
+            previous_status = task.status
+            if task.celery_task_id:
+                try:
+                    from app.tasks.celery_app import celery_app
+
+                    celery_app.control.revoke(
+                        task.celery_task_id,
+                        terminate=previous_status in {TaskStatus.PROCESSING, TaskStatus.RETRYING},
+                    )
+                except Exception:
+                    logger.warning("撤销Celery任务失败: task_id=%s celery_task_id=%s", task.id, task.celery_task_id, exc_info=True)
+
             task.status = TaskStatus.CANCELLED
             task.completed_at = datetime.now(timezone.utc)
             task.progress = max(float(task.progress or 0.0), 1.0)
@@ -1448,7 +1502,7 @@ class ExtractionService:
             return "cancelled"
 
         if task.status not in deletable_statuses:
-            raise ValidationException("仅待处理/排队中任务可取消，或已完成/失败/已取消任务可删除")
+            raise ValidationException("仅待处理/排队中/处理中/重试中任务可取消，或已完成/失败/已取消任务可删除")
 
         await self.db.delete(task)
         await self.db.flush()

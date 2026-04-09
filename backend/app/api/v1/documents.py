@@ -12,6 +12,11 @@ from app.core.auth import get_current_user
 from app.models.user import User
 from app.models.document import DocumentStatus
 from app.config import settings
+from app.core.preview_converter import (
+    convert_office_to_html,
+    is_office_preview_supported,
+    PreviewConversionError,
+)
 from app.processors.mime_resolver import normalize_mime_type
 from fastapi.responses import StreamingResponse
 import io
@@ -21,6 +26,22 @@ from urllib.parse import quote
 
 router = APIRouter(prefix="/documents", tags=["文档管理"])
 logger = logging.getLogger(__name__)
+
+
+def _build_content_disposition(filename: str, inline: bool = False) -> str:
+    """生成 RFC5987 兼容的 Content-Disposition。"""
+    def _ascii_fallback(name: str) -> str:
+        try:
+            name.encode("ascii")
+            return name
+        except UnicodeEncodeError:
+            return "".join(c if ord(c) < 128 else "_" for c in name)
+
+    safe_name = filename or "download"
+    ascii_name = _ascii_fallback(safe_name)
+    quoted = quote(safe_name)
+    mode = "inline" if inline else "attachment"
+    return f"{mode}; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
 
 
 @router.post("/upload", response_model=ResponseBase[DocumentOut], summary="上传单个文档")
@@ -195,6 +216,59 @@ async def delete_document(
     return ResponseBase(data=MessageResponse(message="文档已删除"))
 
 
+@router.get("/{document_id}/preview", summary="在线预览文档")
+async def preview_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """后端代理预览：保持鉴权并以内联方式返回，供前端在线查看。"""
+    svc = DocumentService(db)
+    owner_id = None if current_user.is_superuser else current_user.id
+    document = await svc.get_by_id(document_id, owner_id=owner_id)
+
+    from app.core.storage import storage
+
+    try:
+        content = await asyncio.to_thread(storage.download_file, document.storage_bucket, document.storage_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"加载预览失败: {str(e)}")
+
+    filename = document.display_name or document.name or "preview"
+    normalized_mime = normalize_mime_type(document.mime_type, filename, default_text=False)
+
+    # DOCX/XLSX 走服务端 HTML 转换，提供更接近原始版式的在线查看体验。
+    if is_office_preview_supported(normalized_mime, filename):
+        try:
+            html_content = await asyncio.to_thread(convert_office_to_html, content, normalized_mime, filename)
+            base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+            preview_name = f"{base_name}.preview.html"
+            html_headers = {
+                "Content-Disposition": _build_content_disposition(preview_name, inline=True),
+            }
+            return StreamingResponse(
+                io.BytesIO(html_content),
+                media_type="text/html",
+                headers=html_headers,
+            )
+        except PreviewConversionError as e:
+            logger.warning(
+                "Office 预览转换失败，回退原始文件预览: document_id=%s mime=%s error=%s",
+                document.id,
+                normalized_mime,
+                str(e),
+            )
+
+    headers = {
+        "Content-Disposition": _build_content_disposition(filename, inline=True),
+    }
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=normalized_mime or "application/octet-stream",
+        headers=headers,
+    )
+
+
 @router.get("/{document_id}/download", summary="通过后端代理下载文档")
 async def download_document(
     document_id: str,
@@ -215,16 +289,5 @@ async def download_document(
         raise HTTPException(status_code=500, detail=f"下载文件失败: {str(e)}")
 
     filename = document.display_name or document.name or "download"
-    # 为避免非 latin-1 字符导致的编码错误，按 RFC5987 提供 filename*，并提供 ASCII 回退
-    def _ascii_fallback(name: str) -> str:
-        try:
-            name.encode('ascii')
-            return name
-        except UnicodeEncodeError:
-            return ''.join(c if ord(c) < 128 else '_' for c in name)
-
-    ascii_name = _ascii_fallback(filename)
-    quoted = quote(filename)
-    content_disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
-    headers = {"Content-Disposition": content_disposition}
+    headers = {"Content-Disposition": _build_content_disposition(filename, inline=False)}
     return StreamingResponse(io.BytesIO(content), media_type=document.mime_type or "application/octet-stream", headers=headers)

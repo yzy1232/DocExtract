@@ -176,6 +176,9 @@ export const documentApi = {
   // 获取下载URL
   getDownloadUrl: (id) => request.get(`/documents/${id}/download-url`),
 
+  // 通过后端代理预览文件（返回 blob）
+  preview: (id) => request.get(`/documents/${id}/preview`, { responseType: 'blob' }),
+
   // 通过后端代理下载文件（返回 blob）
   download: (id) => request.get(`/documents/${id}/download`, { responseType: 'blob' }),
 
@@ -199,13 +202,13 @@ export const extractionApi = {
   // 重启失败任务
   restart: (id) => request.post(`/extractions/${id}/restart`),
 
-  // 删除任务（待处理/排队中会执行取消）
+  // 删除任务（待处理/排队中/处理中/重试中会执行取消）
   delete: (id) => request.delete(`/extractions/${id}`),
 
   // 批量重启失败任务
   batchRestart: (taskIds) => request.post('/extractions/batch-restart', { task_ids: taskIds }),
 
-  // 批量删除任务（待处理/排队中会执行取消）
+  // 批量删除任务（待处理/排队中/处理中/重试中会执行取消）
   batchDelete: (taskIds) => request.post('/extractions/batch-delete', { task_ids: taskIds }),
 
   // 获取提取结果

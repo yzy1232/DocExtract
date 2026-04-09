@@ -61,6 +61,12 @@ const routes = [
         component: () => import('@/views/document/DocumentUpload.vue'),
         meta: { title: '上传文档', parent: 'DocumentList' },
       },
+      {
+        path: 'documents/:id/preview',
+        name: 'DocumentPreview',
+        component: () => import('@/views/document/DocumentPreview.vue'),
+        meta: { title: '在线预览', parent: 'DocumentList' },
+      },
       // 提取任务
       {
         path: 'extractions',

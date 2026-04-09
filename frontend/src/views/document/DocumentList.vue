@@ -99,6 +99,9 @@
               >
                 提取模板
               </el-button>
+              <el-button size="small" text type="primary" @click="previewDoc(row)">
+                在线查看
+              </el-button>
               <el-button size="small" text type="primary" @click="downloadDoc(row)">
                 下载
               </el-button>
@@ -204,6 +207,10 @@ function createTemplateFromDoc(row) {
     return
   }
   router.push({ path: '/templates/create', query: { document_id: row.id } })
+}
+
+function previewDoc(row) {
+  router.push(`/documents/${row.id}/preview`)
 }
 
 async function downloadDoc(row) {

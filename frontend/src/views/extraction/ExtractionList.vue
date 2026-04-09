@@ -194,7 +194,8 @@ const statusLabelMap = {
 const priorityTypeMap = { low: 'info', normal: '', high: 'warning', urgent: 'danger' }
 const priorityLabelMap = { low: '低', normal: '普通', high: '高', urgent: '紧急' }
 
-const deletableStatuses = ['pending', 'queued', 'completed', 'failed', 'cancelled']
+const cancellableStatuses = ['pending', 'queued', 'running', 'processing', 'retrying']
+const deletableStatuses = [...cancellableStatuses, 'completed', 'failed', 'cancelled']
 const failedSelectedIds = computed(() => selectedRows.value.filter(item => item.status === 'failed').map(item => item.id))
 const deletableSelectedIds = computed(() => selectedRows.value
   .filter(item => deletableStatuses.includes(item.status))
@@ -334,9 +335,9 @@ async function handleRestart(row) {
 }
 
 async function handleDelete(row) {
-  const isCancellable = ['pending', 'queued'].includes(row.status)
+  const isCancellable = cancellableStatuses.includes(row.status)
   await ElMessageBox.confirm(
-    isCancellable ? '确认取消该任务？' : '确认删除该任务？删除后不可恢复。',
+    isCancellable ? '确认取消该任务？系统会尝试中断正在执行的处理。' : '确认删除该任务？删除后不可恢复。',
     isCancellable ? '取消确认' : '删除确认',
     { type: 'warning' },
   )
@@ -364,7 +365,7 @@ async function handleBatchRestart() {
 
 async function handleBatchDelete() {
   if (deletableSelectedIds.value.length === 0) return
-  await ElMessageBox.confirm(`确认处理选中的 ${deletableSelectedIds.value.length} 个任务？待处理/排队中将取消，终态任务将删除。`, '批量处理确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确认处理选中的 ${deletableSelectedIds.value.length} 个任务？待处理/排队中/处理中/重试中将取消，终态任务将删除。`, '批量处理确认', { type: 'warning' })
   try {
     const res = await extractionApi.batchDelete(deletableSelectedIds.value)
     const successCount = res.data?.success_count ?? 0
