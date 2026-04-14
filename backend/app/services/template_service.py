@@ -681,6 +681,25 @@ class TemplateService:
 
         file_content = storage.download_file(document.storage_bucket, document.storage_path)
         mime_type = normalize_mime_type(document.mime_type, document.name)
+        inferred_name = (template_name or "").strip() or self._default_template_name(document.name)
+        inferred_desc = (description or "").strip() or f"基于文档《{document.display_name or document.name}》自动生成"
+
+        # Excel 推理优先走轻量表头读取，避免对大表做全量解析导致内存和CPU峰值过高。
+        is_excel_doc = mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if is_excel_doc:
+            excel_fields = self._infer_fields_from_excel_file(file_content, max_fields)
+            if excel_fields:
+                logger.info(
+                    "模板自动推断命中Excel轻量确定性分支: document_id=%s field_count=%s",
+                    document_id,
+                    len(excel_fields),
+                )
+                return {
+                    "name": inferred_name,
+                    "description": inferred_desc,
+                    "fields": excel_fields,
+                }
+
         processor = get_processor(mime_type)
         if not processor:
             raise ValidationException(f"文档不支持解析，MIME={mime_type}")
@@ -696,8 +715,6 @@ class TemplateService:
         text_chunks = self._split_text_with_overlap(full_text, chunk_size, chunk_overlap)
         selected_chunks = text_chunks[:max_chunks]
         inferred_fields: List[Dict[str, Any]] = []
-        inferred_name = (template_name or "").strip() or self._default_template_name(document.name)
-        inferred_desc = (description or "").strip() or f"基于文档《{document.display_name or document.name}》自动生成"
 
         logger.info(
             "模板自动推断开始: document_id=%s requester_id=%s mime_type=%s doc_len=%s chunk_size=%s overlap=%s total_chunks=%s selected_chunks=%s max_fields=%s",
@@ -713,7 +730,6 @@ class TemplateService:
         )
 
         # Excel 优先使用真实表头做确定性推断，避免LLM异常时退化为固定兜底字段。
-        is_excel_doc = mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         if is_excel_doc:
             excel_fields = self._infer_fields_from_excel_tables(parse_result, max_fields)
             if excel_fields:
@@ -1362,6 +1378,106 @@ class TemplateService:
 
             if len(header_samples) >= max_fields:
                 break
+
+        if not header_samples:
+            return []
+
+        fields: List[Dict[str, Any]] = []
+        used_names = set()
+        for idx, (display_name, samples) in enumerate(header_samples):
+            key = self._deduplicate_name(self._normalize_field_name(display_name, idx + 1), used_names)
+            used_names.add(key)
+            field_type = self._infer_field_type_from_header_and_samples(display_name, samples)
+
+            fields.append(
+                {
+                    "name": key,
+                    "display_name": display_name[:128],
+                    "field_type": field_type,
+                    "description": f"从Excel表头提取{display_name}",
+                    "required": False,
+                    "extraction_hints": None,
+                    "sort_order": idx,
+                }
+            )
+
+        return fields
+
+    def _infer_fields_from_excel_file(self, file_content: bytes, max_fields: int) -> List[Dict[str, Any]]:
+        """直接从Excel文件读取表头与有限样本，避免全量解析造成资源峰值。"""
+        if max_fields <= 0 or not file_content:
+            return []
+
+        try:
+            import openpyxl
+
+            wb = openpyxl.load_workbook(io.BytesIO(file_content), data_only=True, read_only=True)
+        except Exception as e:
+            logger.warning("模板自动推断Excel轻量解析失败，回退通用解析流程: error=%s", e)
+            return []
+
+        header_samples: List[Tuple[str, List[Any]]] = []
+        seen_headers = set()
+
+        try:
+            for ws in wb.worksheets:
+                row_iter = ws.iter_rows(values_only=True)
+
+                header_row: List[Any] = []
+                for row in row_iter:
+                    row_values = list(row or [])
+                    if any(cell not in (None, "") for cell in row_values):
+                        header_row = row_values
+                        break
+
+                if not header_row:
+                    continue
+
+                samples_by_col: List[List[Any]] = [[] for _ in range(len(header_row))]
+                for row in row_iter:
+                    row_values = list(row or [])
+                    row_done = True
+                    for col_idx in range(len(header_row)):
+                        if len(samples_by_col[col_idx]) < 60:
+                            row_done = False
+                        if col_idx >= len(row_values):
+                            continue
+
+                        value = row_values[col_idx]
+                        if value in (None, ""):
+                            continue
+
+                        samples = samples_by_col[col_idx]
+                        if len(samples) < 60:
+                            samples.append(value)
+
+                    if row_done:
+                        break
+
+                for col_idx, raw_header in enumerate(header_row):
+                    header = str(raw_header).strip() if raw_header is not None else ""
+                    if not header:
+                        continue
+                    if re.match(r"^column_\d+$", header, flags=re.IGNORECASE):
+                        continue
+
+                    header_key = header.lower()
+                    if header_key in seen_headers:
+                        continue
+                    seen_headers.add(header_key)
+
+                    samples = samples_by_col[col_idx] if col_idx < len(samples_by_col) else []
+                    header_samples.append((header, samples))
+                    if len(header_samples) >= max_fields:
+                        break
+
+                if len(header_samples) >= max_fields:
+                    break
+        finally:
+            try:
+                wb.close()
+            except Exception:
+                pass
 
         if not header_samples:
             return []

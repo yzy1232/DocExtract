@@ -8,6 +8,7 @@ import io
 from typing import Optional
 from urllib.parse import quote
 from fastapi import APIRouter, Depends, Query, UploadFile, File, Form
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -118,7 +119,7 @@ async def infer_template_from_document_stream(
                 on_chunk_done=on_chunk_done,
             )
             infer_out = TemplateInferOut.model_validate(inferred)
-            await queue.put({"type": "final", "data": infer_out.model_dump()})
+            await queue.put({"type": "final", "data": infer_out.model_dump(mode="json")})
             logger.info(
                 "模板自动推断流式完成: document_id=%s field_count=%s",
                 data.document_id,
@@ -139,7 +140,7 @@ async def infer_template_from_document_stream(
                 event_type = item.get("type")
                 if event_type == "done":
                     break
-                yield json.dumps(item, ensure_ascii=False) + "\n"
+                yield json.dumps(jsonable_encoder(item), ensure_ascii=False) + "\n"
         finally:
             if not producer_task.done():
                 producer_task.cancel()
