@@ -1,6 +1,7 @@
 """
 数据库连接模块 - 异步 SQLAlchemy 配置
 """
+import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import event, text
@@ -43,6 +44,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
+        except asyncio.CancelledError:
+            await session.rollback()
+            raise
         except Exception:
             await session.rollback()
             raise

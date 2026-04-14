@@ -2,6 +2,7 @@
 模板管理 API
 """
 import asyncio
+from contextlib import suppress
 import json
 import logging
 import io
@@ -11,7 +12,7 @@ from fastapi import APIRouter, Depends, Query, UploadFile, File, Form
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.database import get_db
+from app.database import get_db, AsyncSessionLocal
 from app.schemas.template import (
     TemplateCreate, TemplateUpdate, TemplateOut, TemplateListOut,
     TemplateFieldCreate, TemplateFieldOut, TemplateCategoryCreate, TemplateCategoryOut,
@@ -19,7 +20,7 @@ from app.schemas.template import (
 )
 from app.schemas.common import ResponseBase, PaginatedResponse, PageInfo
 from app.services.template_service import TemplateService
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, get_current_user_detached
 from app.core.exceptions import ValidationException
 from app.models.user import User
 from app.models.template import TemplateStatus
@@ -90,8 +91,7 @@ async def infer_template_from_document(
 @router.post("/infer-from-document/stream", summary="从文档自动推断模板（流式）")
 async def infer_template_from_document_stream(
     data: TemplateInferRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_detached),
 ):
     logger.info(
         "模板自动推断流式请求: user_id=%s document_id=%s max_fields=%s template_name=%s",
@@ -101,42 +101,57 @@ async def infer_template_from_document_stream(
         data.template_name,
     )
 
-    svc = TemplateService(db)
     queue: asyncio.Queue[dict] = asyncio.Queue()
 
     async def on_chunk_done(payload: dict):
         await queue.put({"type": "progress", "data": payload})
 
     async def producer():
-        try:
-            inferred = await svc.infer_template_from_document(
-                document_id=data.document_id,
-                requester_id=current_user.id,
-                requester_is_superuser=current_user.is_superuser,
-                template_name=data.template_name,
-                description=data.description,
-                max_fields=data.max_fields,
-                on_chunk_done=on_chunk_done,
-            )
-            infer_out = TemplateInferOut.model_validate(inferred)
-            await queue.put({"type": "final", "data": infer_out.model_dump(mode="json")})
-            logger.info(
-                "模板自动推断流式完成: document_id=%s field_count=%s",
-                data.document_id,
-                len(infer_out.fields),
-            )
-        except Exception as e:
-            logger.exception("模板自动推断流式失败: document_id=%s error=%s", data.document_id, e)
-            await queue.put({"type": "error", "data": {"message": str(e)}})
-        finally:
-            await queue.put({"type": "done"})
+        async with AsyncSessionLocal() as session:
+            svc = TemplateService(session)
+            try:
+                inferred = await svc.infer_template_from_document(
+                    document_id=data.document_id,
+                    requester_id=current_user.id,
+                    requester_is_superuser=current_user.is_superuser,
+                    template_name=data.template_name,
+                    description=data.description,
+                    max_fields=data.max_fields,
+                    on_chunk_done=on_chunk_done,
+                )
+                infer_out = TemplateInferOut.model_validate(inferred)
+                await queue.put({"type": "final", "data": infer_out.model_dump(mode="json")})
+                logger.info(
+                    "模板自动推断流式完成: document_id=%s field_count=%s",
+                    data.document_id,
+                    len(infer_out.fields),
+                )
+            except asyncio.CancelledError:
+                with suppress(Exception):
+                    await session.rollback()
+                logger.info("模板自动推断流式任务已取消: document_id=%s", data.document_id)
+                raise
+            except Exception as e:
+                with suppress(Exception):
+                    await session.rollback()
+                logger.exception("模板自动推断流式失败: document_id=%s error=%s", data.document_id, e)
+                await queue.put({"type": "error", "data": {"message": str(e)}})
+            finally:
+                await queue.put({"type": "done"})
 
     async def stream_generator():
         producer_task = asyncio.create_task(producer())
         try:
             yield json.dumps({"type": "start", "data": {"document_id": data.document_id}}, ensure_ascii=False) + "\n"
             while True:
-                item = await queue.get()
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    if producer_task.done():
+                        break
+                    yield json.dumps({"type": "heartbeat", "data": {"document_id": data.document_id}}, ensure_ascii=False) + "\n"
+                    continue
+
                 event_type = item.get("type")
                 if event_type == "done":
                     break
@@ -144,6 +159,8 @@ async def infer_template_from_document_stream(
         finally:
             if not producer_task.done():
                 producer_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await producer_task
 
     return StreamingResponse(
         stream_generator(),

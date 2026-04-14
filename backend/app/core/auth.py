@@ -5,18 +5,18 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.database import get_db
+from app.database import get_db, AsyncSessionLocal
 from app.models.user import User, UserStatus
 from app.core.security import decode_token
 
 security_scheme = HTTPBearer()
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
-    db: AsyncSession = Depends(get_db),
+async def _load_current_user_from_db(
+    credentials: HTTPAuthorizationCredentials,
+    db: AsyncSession,
 ) -> User:
-    """获取当前认证用户（JWT 方式）"""
+    """解析 token 并加载当前用户。"""
     token = credentials.credentials
     payload = decode_token(token)
     user_id = payload.get("sub")
@@ -38,6 +38,24 @@ async def get_current_user(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
 
     return user
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """获取当前认证用户（JWT 方式）"""
+    return await _load_current_user_from_db(credentials, db)
+
+
+async def get_current_user_detached(
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+) -> User:
+    """短生命周期用户依赖：适用于流式接口，避免请求期长占用连接。"""
+    async with AsyncSessionLocal() as db:
+        user = await _load_current_user_from_db(credentials, db)
+        db.expunge(user)
+        return user
 
 
 async def get_current_superuser(
