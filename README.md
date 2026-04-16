@@ -5,11 +5,15 @@
 ## 功能特性
 
 - **多格式文档支持**：PDF（含扫描版 OCR）、Word (.docx)、Excel (.xlsx)、纯文本
+- **文档在线预览**：支持对上传的 PDF、图片以及 Word/Excel 转换成的 HTML 原生进行在线预览
 - **模板驱动提取**：可视化定义提取字段（名称、类型、是否必填、描述），驱动 LLM 精准输出
+- **智能模板推断**：支持直接基于示例文档的内容通过 LLM/规则自动推断并生成提取模板字段
+- **提取任务控制**：支持异步提取任务的实时进度推送（WebSocket），同时支持在处理中手动中止/取消提取
 - **多 LLM 提供商**：统一 OpenAI 兼容协议，支持 OpenAI、DeepSeek、Ollama 等，支持降级策略
-- **异步任务队列**：Celery + Redis，文档解析与 LLM 提取异步化，支持优先级调度
-- **实时进度推送**：WebSocket 推送任务进度，无需轮询
+- **异步任务队列**：Celery + Redis，文档解析与 LLM 提取大文件分块并发处理异步化，支持优先级调度
+- **实时进度推流**：针对分段长文档解析的进度回调，前端按 UTC+8 显示准确状态
 - **字段级置信度**：每个提取字段附带 LLM 置信度评分
+- **容灾与系统恢复**：后端自动化异常检测、Redis 与 DB 全自动紧急修复机制和无登录应急控制台
 - **结果导出**：支持 Excel、JSON、CSV 格式导出
 - **RBAC 权限控制**：角色 + 权限双层模型，API Key 支持
 - **分布式存储**：MinIO（S3 兼容）存储原始文档与结果
@@ -178,6 +182,7 @@ Project1/
 |------|------|------|
 | GET  | `/api/v1/templates` | 列表（分页/搜索） |
 | POST | `/api/v1/templates` | 创建模板 |
+| POST | `/api/v1/templates/infer-from-document` | 从示例文档智能推断模板并生成字段 |
 | POST | `/api/v1/templates/import` | 上传模板文件（Excel/CSV） |
 | GET  | `/api/v1/templates/{id}` | 模板详情 |
 | GET  | `/api/v1/templates/{id}/download` | 下载模板文件（Excel/CSV） |
@@ -193,6 +198,7 @@ Project1/
 | POST | `/api/v1/documents/batch-upload` | 批量上传 |
 | GET  | `/api/v1/documents` | 文档列表 |
 | GET  | `/api/v1/documents/{id}/status` | 解析状态 |
+| GET  | `/api/v1/documents/{id}/preview` | 获取预签名在线文档预览链接（格式回退和 HTML 互转）|
 | GET  | `/api/v1/documents/{id}/download-url` | 获取预签名下载链接 |
 
 ### 提取任务
@@ -203,10 +209,11 @@ Project1/
 | POST | `/api/v1/extractions/batch` | 批量创建 |
 | GET  | `/api/v1/extractions` | 任务列表 |
 | GET  | `/api/v1/extractions/{id}` | 任务详情+进度 |
+| POST | `/api/v1/extractions/{id}/cancel` | 从任务流中中止/取消正在执行的任务 |
 | GET  | `/api/v1/extractions/{id}/results` | 字段级提取结果 |
 | POST | `/api/v1/extractions/export` | 批量导出结果 |
 
-### 系统
+### 系统与容灾
 
 | 方法 | 路径 | 描述 |
 |------|------|------|
@@ -214,6 +221,10 @@ Project1/
 | GET  | `/api/v1/system/stats` | 统计数据 |
 | GET  | `/api/v1/system/llm-configs` | LLM 配置列表 |
 | POST | `/api/v1/system/llm-configs/{id}/test` | 测试 LLM 连接 |
+| GET  | `/api/v1/system/disaster-check` | 日常状态异常和核心数据库丢失检测 (内网) |
+| POST | `/api/v1/system/disaster-repair` | 内网主动发起的系统错误修复（主从 Redis / 重建引擎） |
+| GET  | `/api/v1/system/public-disaster-check` | 验证无登录态场景下严重的 DB/Redis 服务崩溃降级 |
+| POST | `/api/v1/system/public-disaster-repair` | 灾难无响应时的公共后门修复和重建 (需校验秘钥) |
 
 ### WebSocket
 
